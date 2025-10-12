@@ -17,6 +17,7 @@ from .core.smart_pipeline import SmartCVPipeline
 from .api import api_v1_router
 from .api.v1.stream import start_websocket_manager, stop_websocket_manager, broadcast_analysis_result
 from .processor_manager import ensure_processors_initialized, get_processors, cleanup_processors
+from .tracking.vehicle_tracker import get_tracker, cleanup_tracker
 
 # Configuration
 HTTP_PORT = int(os.environ.get("JARVIS_HTTP_PORT", "8001"))
@@ -46,12 +47,13 @@ app.add_middleware(
 # Global processors (managed by processor_manager)
 center_depth_processor: Optional[CenterDepthProcessor] = None
 smart_pipeline: Optional[SmartCVPipeline] = None
+vehicle_tracker = None
 
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize basic services on startup (without camera processing)"""
-    global center_depth_processor, smart_pipeline
+    global center_depth_processor, smart_pipeline, vehicle_tracker
     
     logger.info("Starting Jarvis Smart CV Pipeline API...")
     
@@ -64,6 +66,18 @@ async def startup_event():
         center_depth_processor = None
         smart_pipeline = None
         
+        # Initialize vehicle tracker
+        vehicle_tracker = get_tracker()
+        if vehicle_tracker.initialize():
+            logger.info("Vehicle tracker initialized")
+            # Start tracking automatically
+            if vehicle_tracker.start_tracking():
+                logger.info("Vehicle tracking started")
+            else:
+                logger.warning("Failed to start vehicle tracking")
+        else:
+            logger.error("Failed to initialize vehicle tracker")
+        
         logger.info("API server ready. Camera processing will start on first request.")
         
     except Exception as e:
@@ -74,7 +88,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup processors on shutdown"""
-    global center_depth_processor, smart_pipeline
+    global center_depth_processor, smart_pipeline, vehicle_tracker
     
     logger.info("Shutting down Jarvis Smart CV Pipeline...")
     
@@ -82,6 +96,11 @@ async def shutdown_event():
         # Stop WebSocket manager
         await stop_websocket_manager()
         logger.info("WebSocket manager stopped")
+        
+        # Stop vehicle tracker
+        if vehicle_tracker:
+            vehicle_tracker.cleanup()
+            logger.info("Vehicle tracker stopped")
         
         if smart_pipeline:
             smart_pipeline.cleanup()

@@ -210,6 +210,33 @@ class ClassifierRegistry:
         
         # Register available classifier types
         self._classifier_types: Dict[str, Type[BaseClassifier]] = {}
+        
+        # Register default classifier types
+        self._register_default_types()
+    
+    def _register_default_types(self):
+        """Register default classifier types"""
+        try:
+            # Import and register person classifier
+            from .person_classifier import PersonClassifier
+            self._classifier_types["person"] = PersonClassifier
+            
+            # Import and register object classifier
+            from .object_classifier import ObjectClassifier
+            self._classifier_types["object"] = ObjectClassifier
+            
+            # Import and register face classifier
+            from .face_classifier import FaceClassifier
+            self._classifier_types["face"] = FaceClassifier
+            
+            # Import and register vehicle classifier
+            from .vehicle_classifier import VehicleClassifier
+            self._classifier_types["vehicle"] = VehicleClassifier
+            
+            logger.info("[REGISTRY] Default classifier types registered")
+            
+        except ImportError as e:
+            logger.warning(f"[REGISTRY] Could not register some classifier types: {e}")
     
     def register_classifier_type(self, classifier_type: str, classifier_class: Type[BaseClassifier]):
         """Register a new classifier type"""
