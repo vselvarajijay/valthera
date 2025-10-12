@@ -10,7 +10,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 
 from .center_depth_processor import CenterDepthProcessor
 from .core.smart_pipeline import SmartCVPipeline
@@ -158,8 +158,299 @@ async def get_logs():
         return JSONResponse({"error": str(e), "log_entries": []})
 
 
-@app.get("/")
-async def root():
+@app.get("/debug", response_class=HTMLResponse)
+async def debug_view():
+    """Debug HTML page showing camera and depth views"""
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Jarvis Camera Debug</title>
+        <style>
+            body {
+                margin: 0;
+                padding: 20px;
+                background: #1a1a1a;
+                font-family: Arial, sans-serif;
+                color: white;
+            }
+            .container {
+                max-width: 1400px;
+                margin: 0 auto;
+            }
+            h1 {
+                text-align: center;
+                margin-bottom: 30px;
+            }
+            .status {
+                background: #2a2a2a;
+                padding: 15px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                text-align: center;
+            }
+            .status.error {
+                background: #4a1a1a;
+                border: 1px solid #ff4444;
+            }
+            .status.success {
+                background: #1a4a1a;
+                border: 1px solid #44ff44;
+            }
+            .feeds {
+                display: grid;
+                grid-template-columns: 1fr 1fr 1fr;
+                gap: 15px;
+            }
+            
+            .car-counter {
+                background: #3a3a3a;
+                padding: 10px;
+                border-radius: 4px;
+                margin-bottom: 10px;
+                text-align: center;
+                font-size: 24px;
+                font-weight: bold;
+                color: #4ade80;
+            }
+            
+            @media (max-width: 1200px) {
+                .feeds {
+                    grid-template-columns: 1fr 1fr;
+                }
+            }
+            .feed {
+                background: #2a2a2a;
+                padding: 20px;
+                border-radius: 8px;
+            }
+            .feed h2 {
+                margin-top: 0;
+                margin-bottom: 15px;
+                font-size: 18px;
+            }
+            img {
+                width: 100%;
+                height: auto;
+                border-radius: 4px;
+                background: #000;
+            }
+            .info {
+                margin-top: 10px;
+                font-size: 12px;
+                color: #888;
+            }
+            .controls {
+                text-align: center;
+                margin-bottom: 20px;
+            }
+            button {
+                background: #4a4a4a;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 4px;
+                cursor: pointer;
+                margin: 0 10px;
+            }
+            button:hover {
+                background: #5a5a5a;
+            }
+            button:disabled {
+                background: #2a2a2a;
+                color: #666;
+                cursor: not-allowed;
+            }
+            @media (max-width: 768px) {
+                .feeds {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Jarvis Camera Debug View</h1>
+            
+            <div class="controls">
+                <button onclick="checkStatus()" id="status-btn">Check Camera Status</button>
+            </div>
+            
+            <div id="status" class="status">
+                <div>Status: <span id="status-text">Checking...</span></div>
+                <div id="status-details"></div>
+            </div>
+            
+            <div class="feeds">
+                <div class="feed">
+                    <h2>Raw Camera Feed</h2>
+                    <img id="raw-feed" src="/api/v1/camera/raw" alt="Raw camera feed" onerror="handleImageError('raw')">
+                    <div class="info">WebSocket streaming (~10 FPS)</div>
+                </div>
+                <div class="feed">
+                    <h2>Depth Map</h2>
+                    <img id="depth-feed" src="/api/v1/camera/depth" alt="Depth map" onerror="handleImageError('depth')">
+                    <div class="info">WebSocket streaming (~10 FPS)</div>
+                </div>
+                <div class="feed">
+                    <h2>Car Tracking</h2>
+                    <div class="car-counter">
+                        Cars Detected: <span id="car-count">0</span>
+                    </div>
+                    <img id="tracking-feed" src="/api/v1/camera/raw" alt="Car tracking" onerror="handleImageError('tracking')">
+                    <div class="info">YOLO car detection with bounding boxes</div>
+                </div>
+            </div>
+        </div>
+        <script>
+            let isInitialized = false;
+            let refreshInterval = null;
+            let wsConnection = null;
+            
+            function updateStatus(message, isError = false) {
+                const statusEl = document.getElementById('status');
+                const statusText = document.getElementById('status-text');
+                const statusDetails = document.getElementById('status-details');
+                
+                statusText.textContent = message;
+                statusDetails.innerHTML = '';
+                
+                if (isError) {
+                    statusEl.className = 'status error';
+                } else {
+                    statusEl.className = 'status success';
+                }
+            }
+            
+            function handleImageError(type) {
+                updateStatus('Camera feed not available - camera may be initializing', true);
+            }
+            
+            function connectWebSocket() {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/api/v1/camera/stream`;
+                
+                wsConnection = new WebSocket(wsUrl);
+                
+                wsConnection.onopen = function() {
+                    updateStatus('WebSocket connected - streaming camera data');
+                    isInitialized = true;
+                };
+                
+                wsConnection.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        
+                        if (data.type === 'camera_frame') {
+                            // Update raw camera feed
+                            if (data.raw_frame) {
+                                const rawImg = document.getElementById('raw-feed');
+                                rawImg.src = 'data:image/jpeg;base64,' + data.raw_frame;
+                            }
+                            
+                            // Update depth map
+                            if (data.depth_frame) {
+                                const depthImg = document.getElementById('depth-feed');
+                                depthImg.src = 'data:image/jpeg;base64,' + data.depth_frame;
+                            }
+                            
+                            // Update car tracking view
+                            if (data.tracking_frame) {
+                                const trackingImg = document.getElementById('tracking-feed');
+                                trackingImg.src = 'data:image/jpeg;base64,' + data.tracking_frame;
+                            }
+                            
+                            // Update car count
+                            if (data.car_count !== undefined) {
+                                document.getElementById('car-count').textContent = data.car_count;
+                            }
+                            
+                            // Update status with frame and car info
+                            updateStatus(`Streaming - Frame ${data.frame_count} - Cars: ${data.car_count || 0}`);
+                        } else if (data.action === 'pong') {
+                            // Handle pong responses
+                            console.log('Received pong from server');
+                        }
+                    } catch (error) {
+                        console.error('Error parsing WebSocket message:', error);
+                    }
+                };
+                
+                wsConnection.onclose = function() {
+                    updateStatus('WebSocket disconnected', true);
+                    isInitialized = false;
+                    
+                    // Try to reconnect after 3 seconds
+                    setTimeout(() => {
+                        if (!wsConnection || wsConnection.readyState === WebSocket.CLOSED) {
+                            updateStatus('Attempting to reconnect...');
+                            connectWebSocket();
+                        }
+                    }, 3000);
+                };
+                
+                wsConnection.onerror = function(error) {
+                    console.error('WebSocket error:', error);
+                    updateStatus('WebSocket connection error', true);
+                };
+            }
+            
+            async function checkStatus() {
+                try {
+                    const response = await fetch('/api/v1/camera/status');
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        const status = data.running ? 'Running' : 'Not Running';
+                        const available = data.available ? 'Available' : 'Not Available';
+                        const wsConnections = data.websocket_connections || 0;
+                        const streamingActive = data.streaming_active || false;
+                        
+                        updateStatus(`Camera Status: ${status} (${available}) - WS Connections: ${wsConnections} - Streaming: ${streamingActive ? 'Active' : 'Inactive'}`);
+                        
+                        if (data.available && data.running && !wsConnection) {
+                            connectWebSocket();
+                        }
+                    } else {
+                        updateStatus('Failed to check camera status', true);
+                    }
+                } catch (error) {
+                    updateStatus('Error checking camera status: ' + error.message, true);
+                }
+            }
+            
+            function startRefresh() {
+                // No longer needed with WebSocket streaming
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                    refreshInterval = null;
+                }
+            }
+            
+            // Check status on page load and connect WebSocket
+            window.onload = function() {
+                checkStatus();
+                // Connect WebSocket after a short delay
+                setTimeout(() => {
+                    if (!wsConnection || wsConnection.readyState === WebSocket.CLOSED) {
+                        connectWebSocket();
+                    }
+                }, 1000);
+            };
+            
+            // Cleanup on page unload
+            window.onbeforeunload = function() {
+                if (wsConnection) {
+                    wsConnection.close();
+                }
+            };
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
     """Root endpoint with basic info"""
     return {
         "name": "Jarvis Smart CV Pipeline",
@@ -168,12 +459,15 @@ async def root():
         "endpoints": {
             "health": "/health",
             "logs": "/logs",
+            "debug": "/debug",
             "api_v1": "/api/v1",
             "analyze": "/api/v1/analyze",
             "stream": "/api/v1/stream",
             "pipeline": "/api/v1/pipeline",
             "classifiers": "/api/v1/classifiers",
-            "frames": "/api/v1/frames"
+            "frames": "/api/v1/frames",
+            "camera": "/api/v1/camera",
+            "camera_stream": "WS /api/v1/camera/stream"
         }
     }
 
