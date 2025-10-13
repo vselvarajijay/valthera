@@ -1,0 +1,203 @@
+#!/bin/bash
+
+set -e
+
+echo "🔐 Setting up Local Cognito"
+
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_header() {
+    echo -e "${BLUE}[COGNITO]${NC} $1"
+}
+
+print_header "Setting up Local Cognito Configuration"
+
+# Check prerequisites
+print_info "Checking prerequisites..."
+
+# Check if AWS CLI is available
+if ! command -v aws &> /dev/null; then
+    print_error "AWS CLI is not installed or not in PATH"
+    print_info "Please install AWS CLI: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+    exit 1
+fi
+
+# Check if jq is available
+if ! command -v jq &> /dev/null; then
+    print_error "jq is not installed or not in PATH"
+    print_info "Please install jq: https://stedolan.github.io/jq/download/"
+    exit 1
+fi
+
+print_success "Prerequisites check passed"
+
+# Wait for Cognito to be ready
+print_info "Waiting for Cognito Local to be ready..."
+for i in {1..30}; do
+    if curl -s http://localhost:9239 >/dev/null; then
+        print_success "Cognito Local is ready"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        print_error "Cognito Local failed to start"
+        exit 1
+    fi
+    sleep 1
+done
+
+print_header "Creating Test User Pool"
+
+# For cognito-local, we need to create the user pool and client using the AWS CLI
+# with the local endpoint
+print_info "Creating user pool using AWS CLI..."
+if ! aws cognito-idp create-user-pool \
+  --pool-name "valthera-local-pool" \
+  --policies 'PasswordPolicy={MinimumLength=8,RequireUppercase=true,RequireLowercase=true,RequireNumbers=true,RequireSymbols=false}' \
+  --auto-verified-attributes email \
+  --alias-attributes email \
+  --username-attributes email \
+  --endpoint-url http://localhost:9239 \
+  --region us-east-1 \
+  --output json > /tmp/user-pool.json 2>/dev/null; then
+    print_error "Failed to create user pool. Check if Cognito Local is running on http://localhost:9239"
+    exit 1
+fi
+
+# Extract the user pool ID
+USER_POOL_ID=$(cat /tmp/user-pool.json | jq -r '.UserPool.Id')
+if [ "$USER_POOL_ID" = "null" ] || [ -z "$USER_POOL_ID" ]; then
+    print_error "Failed to extract user pool ID from response"
+    print_info "Response was:"
+    cat /tmp/user-pool.json
+    exit 1
+fi
+print_success "Created user pool with ID: $USER_POOL_ID"
+
+print_header "Creating Test User"
+
+# Create test user
+print_info "Creating test user..."
+if ! aws cognito-idp admin-create-user \
+  --user-pool-id "$USER_POOL_ID" \
+  --username "test@valthera.com" \
+  --user-attributes Name=email,Value=test@valthera.com Name=email_verified,Value=true \
+  --temporary-password "TestPass123!" \
+  --desired-delivery-mediums EMAIL \
+  --endpoint-url http://localhost:9239 \
+  --region us-east-1 >/dev/null 2>&1; then
+    print_warning "Failed to create test user (may already exist)"
+else
+    print_success "Created test user"
+fi
+
+# Set permanent password
+print_info "Setting permanent password for test user..."
+if ! aws cognito-idp admin-set-user-password \
+  --user-pool-id "$USER_POOL_ID" \
+  --username "test@valthera.com" \
+  --password "TestPass123!" \
+  --permanent \
+  --endpoint-url http://localhost:9239 \
+  --region us-east-1 >/dev/null 2>&1; then
+    print_warning "Failed to set permanent password (user may not exist)"
+else
+    print_success "Set permanent password for test user"
+fi
+
+print_header "Creating Client App"
+
+# Create client app
+print_info "Creating client app..."
+if ! aws cognito-idp create-user-pool-client \
+  --user-pool-id "$USER_POOL_ID" \
+  --client-name "valthera-client" \
+  --no-generate-secret \
+  --explicit-auth-flows ALLOW_USER_PASSWORD_AUTH ALLOW_REFRESH_TOKEN_AUTH \
+  --supported-identity-providers COGNITO \
+  --endpoint-url http://localhost:9239 \
+  --region us-east-1 \
+  --output json > /tmp/client.json 2>/dev/null; then
+    print_error "Failed to create user pool client"
+    exit 1
+fi
+
+# Extract the client ID
+CLIENT_ID=$(cat /tmp/client.json | jq -r '.UserPoolClient.ClientId')
+if [ "$CLIENT_ID" = "null" ] || [ -z "$CLIENT_ID" ]; then
+    print_error "Failed to extract client ID from response"
+    print_info "Response was:"
+    cat /tmp/client.json
+    exit 1
+fi
+print_success "Created client with ID: $CLIENT_ID"
+
+print_success "Local Cognito setup complete!"
+
+# Create .env.local file for the frontend
+print_info "Creating .env.local file for frontend..."
+
+# Check if app directory exists
+if [ ! -d "app" ]; then
+    print_error "App directory not found. Cannot create .env.local file."
+    print_info "Please ensure you're running this script from the project root directory."
+    exit 1
+fi
+
+ENV_CONTENT="# Local Development Environment Configuration
+# Generated by setup-local-cognito.sh
+
+# AWS Cognito Configuration (cognito-local)
+VITE_COGNITO_USER_POOL_ID=$USER_POOL_ID
+VITE_COGNITO_USER_POOL_CLIENT_ID=$CLIENT_ID
+VITE_COGNITO_ENDPOINT=http://localhost:9239
+
+# API Configuration (Local SAM)
+VITE_API_BASE_URL=http://localhost:3000
+
+# Environment
+NODE_ENV=development
+VITE_ENVIRONMENT=local
+
+# AWS Region
+VITE_AWS_REGION=us-east-1
+
+# Local AWS Credentials for cognito-local
+VITE_AWS_ACCESS_KEY_ID=local
+VITE_AWS_SECRET_ACCESS_KEY=local
+
+# Test User Credentials
+VITE_TEST_USER_EMAIL=test@valthera.com
+VITE_TEST_USER_PASSWORD=TestPass123!"
+
+echo "$ENV_CONTENT" > app/.env.local
+print_success "Created app/.env.local with Cognito configuration"
+
+print_info "Test credentials:"
+echo "  Email: test@valthera.com"
+echo "  Password: TestPass123!"
+echo "  User Pool ID: $USER_POOL_ID"
+echo "  Client ID: $CLIENT_ID"
+
+# Clean up temporary files
+rm -f /tmp/user-pool.json /tmp/client.json 2>/dev/null || true 

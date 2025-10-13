@@ -1,0 +1,2011 @@
+#!/bin/bash
+
+# Valthera Local Development CLI Tool
+# Manages local AWS services (DynamoDB, LocalStack, Cognito-Local)
+
+set -e
+
+# Colors for output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+# Service configuration
+AWS_SERVICES=(
+    "valthera-dynamodb-local:DynamoDB:http://localhost:8000"
+    "valthera-localstack:LocalStack:http://localhost:4566"
+    "valthera-sqs-local:SQS (ElasticMQ):http://localhost:9324"
+    "valthera-cognito-local:Cognito:http://localhost:9239"
+)
+
+APP_SERVICES=(
+    "SAM API:http://localhost:3000"
+    "React App:http://localhost:5173"
+)
+
+print_success() {
+    echo -e "${GREEN}✅ [SUCCESS]${NC} $1"
+}
+
+print_info() {
+    echo -e "${BLUE}ℹ️  [INFO]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠️  [WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}❌ [ERROR]${NC} $1"
+}
+
+print_header() {
+    echo -e "${BOLD}${CYAN}🚀 $1${NC}"
+}
+
+print_subheader() {
+    echo -e "${BOLD}${BLUE}📋 $1${NC}"
+}
+
+# Set AWS credentials for local services
+setup_aws_env() {
+    export AWS_ACCESS_KEY_ID=local
+    export AWS_SECRET_ACCESS_KEY=local
+    export AWS_DEFAULT_REGION=us-east-1
+}
+
+# Ensure SAM build artifacts exist for mounted functions
+ensure_sam_built() {
+    if [ ! -d ".aws-sam/build/ProjectGetFunction" ]; then
+        print_warning "SAM build artifacts missing (.aws-sam/build/ProjectGetFunction). Running sam build..."
+        if command -v sam &> /dev/null; then
+            sam build --use-container || { print_error "sam build failed"; return 1; }
+            print_success "SAM build completed"
+        else
+            print_error "SAM CLI not found; cannot build. Install AWS SAM CLI."
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Process management for application services
+REACT_PID_FILE=".valthera-react.pid"
+SAM_PID_FILE=".valthera-sam.pid"
+
+# Check if a process is running
+is_process_running() {
+    local pid=$1
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# Get stored PID
+get_stored_pid() {
+    local pid_file=$1
+    [ -f "$pid_file" ] && cat "$pid_file" 2>/dev/null || echo ""
+}
+
+# Store PID
+store_pid() {
+    local pid=$1
+    local pid_file=$2
+    echo "$pid" > "$pid_file"
+}
+
+# Remove PID file
+remove_pid_file() {
+    local pid_file=$1
+    [ -f "$pid_file" ] && rm "$pid_file"
+}
+
+# Get processes using a specific port
+get_processes_on_port() {
+    local port=$1
+    lsof -ti :$port 2>/dev/null | tr '\n' ' ' | sed 's/[ ]*$//'
+}
+
+# Stop application process
+stop_app_process() {
+    local service_name=$1
+    local pid_file=$2
+    local port=$3
+    local pid=$(get_stored_pid "$pid_file")
+    local stopped_any=false
+    
+    # First try to stop the tracked PID
+    if [ -n "$pid" ] && is_process_running "$pid"; then
+        print_info "Stopping tracked $service_name (PID: $pid)..."
+        kill "$pid" 2>/dev/null
+        
+        # Wait for graceful shutdown
+        local count=0
+        while [ $count -lt 10 ] && is_process_running "$pid"; do
+            sleep 1
+            count=$((count + 1))
+        done
+        
+        # Force kill if still running
+        if is_process_running "$pid"; then
+            print_warning "Force killing tracked $service_name..."
+            kill -9 "$pid" 2>/dev/null
+        fi
+        stopped_any=true
+    fi
+    
+    # Always check for any processes on the expected port
+    if [ -n "$port" ]; then
+        local port_pids=$(get_processes_on_port "$port")
+        if [ -n "$port_pids" ]; then
+            for port_pid in $port_pids; do
+                # Skip if it's the same as the tracked PID (already handled above)
+                if [ "$port_pid" != "$pid" ] && is_process_running "$port_pid"; then
+                    print_info "Stopping $service_name process on port $port (PID: $port_pid)..."
+                    kill "$port_pid" 2>/dev/null
+                    
+                    # Wait for graceful shutdown
+                    local count=0
+                    while [ $count -lt 5 ] && is_process_running "$port_pid"; do
+                        sleep 1
+                        count=$((count + 1))
+                    done
+                    
+                    # Force kill if still running
+                    if is_process_running "$port_pid"; then
+                        print_warning "Force killing $service_name process..."
+                        kill -9 "$port_pid" 2>/dev/null
+                    fi
+                    stopped_any=true
+                fi
+            done
+        fi
+    fi
+    
+    if $stopped_any; then
+        print_success "$service_name stopped"
+    else
+        print_info "$service_name was not running"
+    fi
+    
+    remove_pid_file "$pid_file"
+}
+
+# Start React app
+start_react_app() {
+    local pid=$(get_stored_pid "$REACT_PID_FILE")
+    
+    if [ -n "$pid" ] && is_process_running "$pid"; then
+        print_info "React app already running (PID: $pid)"
+        return 0
+    fi
+    
+    if [ ! -d "app" ]; then
+        print_error "React app directory 'app' not found"
+        return 1
+    fi
+    
+    # Check if pnpm is available
+    if ! command -v pnpm &> /dev/null; then
+        print_error "pnpm is not installed or not in PATH"
+        print_info "Please install pnpm: npm install -g pnpm"
+        return 1
+    fi
+    
+    # Check if port 5173 is available and resolve conflicts
+    if ! check_and_resolve_port_conflicts "5173" "React App"; then
+        return 1
+    fi
+    
+    print_info "Starting React app..."
+    cd app
+    
+    # Check if dependencies are installed
+    if [ ! -d "node_modules" ]; then
+        print_info "Installing React app dependencies..."
+        if ! pnpm install; then
+            print_error "Failed to install React app dependencies"
+            cd ..
+            return 1
+        fi
+        print_success "Dependencies installed"
+    fi
+    
+    # Start React app in background using pnpm
+    nohup pnpm run dev > ../logs/react.log 2>&1 &
+    local react_pid=$!
+    cd ..
+    
+    store_pid "$react_pid" "$REACT_PID_FILE"
+    print_success "React app started (PID: $react_pid)"
+    print_info "  Logs: tail -f logs/react.log"
+    
+    # Wait a moment to check if it started successfully
+    sleep 3
+    if ! is_process_running "$react_pid"; then
+        print_error "React app failed to start. Check logs/react.log"
+        remove_pid_file "$REACT_PID_FILE"
+        return 1
+    fi
+}
+
+# Start SAM API
+start_sam_api() {
+    local pid=$(get_stored_pid "$SAM_PID_FILE")
+    
+    if [ -n "$pid" ] && is_process_running "$pid"; then
+        print_info "SAM API already running (PID: $pid)"
+        return 0
+    fi
+    
+    if [ ! -f "template.yaml" ]; then
+        print_warning "SAM template.yaml not found. Skipping SAM API start."
+        return 0
+    fi
+    
+    # Check if env-local.json exists, generate if missing
+    if [ ! -f "env-local.json" ]; then
+        print_info "env-local.json not found, generating from template..."
+        generate_env_local
+    fi
+    
+    # Check if port 3000 is available and resolve conflicts
+    if ! check_and_resolve_port_conflicts "3000" "SAM API"; then
+        return 1
+    fi
+    
+    # Ensure SAM build artifacts exist
+    ensure_sam_built || return 1
+
+    print_info "Starting SAM API..."
+    
+    # Create logs directory
+    mkdir -p logs
+    
+    # Start SAM API in background (with debug + explicit host/port)
+    nohup sam local start-api -t template.yaml \
+        --env-vars env-local.json \
+        --host 0.0.0.0 \
+        --port 3000 \
+        --debug \
+        --warm-containers LAZY \
+        > logs/sam.log 2>&1 &
+    local sam_pid=$!
+    
+    store_pid "$sam_pid" "$SAM_PID_FILE"
+    print_success "SAM API started (PID: $sam_pid)"
+    print_info "  Logs: tail -f logs/sam.log"
+    print_info "  Trace single request: curl -i -H 'X-User-ID: local-dev-user' http://localhost:3000/api/projects"
+    
+    # Wait a moment to check if it started successfully  
+    sleep 3
+    if ! is_process_running "$sam_pid"; then
+        print_error "SAM API failed to start. Check logs/sam.log"
+        remove_pid_file "$SAM_PID_FILE"
+        return 1
+    fi
+}
+
+# Start SAM API with force mode (auto-kill conflicts)
+start_sam_api_force() {
+    local pid=$(get_stored_pid "$SAM_PID_FILE")
+    
+    if [ -n "$pid" ] && is_process_running "$pid"; then
+        print_info "SAM API already running (PID: $pid)"
+        return 0
+    fi
+    
+    if [ ! -f "template.yaml" ]; then
+        print_warning "SAM template.yaml not found. Skipping SAM API start."
+        return 0
+    fi
+    
+    # Check if env-local.json exists, generate if missing
+    if [ ! -f "env-local.json" ]; then
+        print_info "env-local.json not found, generating from template..."
+        generate_env_local
+    fi
+    
+    # Check if port 3000 is available and auto-kill conflicts
+    if ! check_and_resolve_port_conflicts "3000" "SAM API" "true"; then
+        return 1
+    fi
+    
+    # Ensure SAM build artifacts exist
+    ensure_sam_built || return 1
+
+    print_info "Starting SAM API..."
+    
+    # Create logs directory
+    mkdir -p logs
+    
+    # Start SAM API in background (with debug + explicit host/port)
+    nohup sam local start-api -t template.yaml \
+        --env-vars env-local.json \
+        --host 0.0.0.0 \
+        --port 3000 \
+        --debug \
+        --warm-containers LAZY \
+        > logs/sam.log 2>&1 &
+    local sam_pid=$!
+    
+    store_pid "$sam_pid" "$SAM_PID_FILE"
+    print_success "SAM API started (PID: $sam_pid)"
+    print_info "  Logs: tail -f logs/sam.log"
+    print_info "  Trace single request: curl -i -H 'X-User-ID: local-dev-user' http://localhost:3000/api/projects"
+    
+    # Wait a moment to check if it started successfully  
+    sleep 3
+    if ! is_process_running "$sam_pid"; then
+        print_error "SAM API failed to start. Check logs/sam.log"
+        remove_pid_file "$SAM_PID_FILE"
+        return 1
+    fi
+}
+
+# Check if Docker is running
+check_docker() {
+    if ! docker info > /dev/null 2>&1; then
+        print_error "Docker is not running. Please start Docker and try again."
+        exit 1
+    fi
+}
+
+# Get container status
+get_container_status() {
+    local container_name=$1
+    local status=$(docker ps --filter "name=$container_name" --format "table {{.Status}}" | tail -n +2)
+    if [ -z "$status" ]; then
+        echo "stopped"
+    else
+        echo "running"
+    fi
+}
+
+# Check if port is available
+check_port_available() {
+    local port=$1
+    local service_name=$2
+    
+    if lsof -ti :$port >/dev/null 2>&1; then
+        print_warning "$service_name port $port is already in use"
+        return 1
+    else
+        print_success "$service_name port $port is available"
+        return 0
+    fi
+}
+
+# Check and resolve port conflicts with user confirmation
+check_and_resolve_port_conflicts() {
+    local port=$1
+    local service_name=$2
+    local auto_kill=${3:-false}
+    
+    if lsof -ti :$port >/dev/null 2>&1; then
+        local pids=$(lsof -ti :$port)
+        local process_info=$(lsof -ti :$port | xargs ps -o pid,command -p 2>/dev/null || echo "Unknown process")
+        
+        print_warning "$service_name port $port is already in use"
+        print_info "Processes using port $port:"
+        echo "$process_info" | while read line; do
+            echo "  • $line"
+        done
+        
+        if [ "$auto_kill" = "true" ]; then
+            print_info "Auto-killing processes on port $port..."
+            for pid in $pids; do
+                if kill -0 "$pid" 2>/dev/null; then
+                    print_info "Killing process $pid..."
+                    kill "$pid" 2>/dev/null
+                    sleep 1
+                    if kill -0 "$pid" 2>/dev/null; then
+                        print_warning "Force killing process $pid..."
+                        kill -9 "$pid" 2>/dev/null
+                    fi
+                fi
+            done
+            sleep 2
+            if ! lsof -ti :$port >/dev/null 2>&1; then
+                print_success "Port $port is now available"
+                return 0
+            else
+                print_error "Failed to free port $port"
+                return 1
+            fi
+        else
+            echo ""
+            read -p "🚨 Kill processes using port $port? (y/n): " -n 1 -r
+            echo ""
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                print_info "Killing processes on port $port..."
+                for pid in $pids; do
+                    if kill -0 "$pid" 2>/dev/null; then
+                        print_info "Killing process $pid..."
+                        kill "$pid" 2>/dev/null
+                        sleep 1
+                        if kill -0 "$pid" 2>/dev/null; then
+                            print_warning "Force killing process $pid..."
+                            kill -9 "$pid" 2>/dev/null
+                        fi
+                    fi
+                done
+                sleep 2
+                if ! lsof -ti :$port >/dev/null 2>&1; then
+                    print_success "Port $port is now available"
+                    return 0
+                else
+                    print_error "Failed to free port $port"
+                    return 1
+                fi
+            else
+                print_error "Cannot start $service_name - port $port is in use"
+                return 1
+            fi
+        fi
+    else
+        print_success "$service_name port $port is available"
+        return 0
+    fi
+}
+
+# Wait for service to be ready
+wait_for_service() {
+    local url=$1
+    local service_name=$2
+    local max_attempts=30
+    local attempt=0
+    
+    print_info "Waiting for $service_name to be ready..."
+    
+    while [ $attempt -lt $max_attempts ]; do
+        if curl -s "$url" >/dev/null 2>&1 || curl -s "$url/health" >/dev/null 2>&1 || curl -s "$url/_localstack/health" >/dev/null 2>&1; then
+            print_success "$service_name is ready!"
+            return 0
+        fi
+        
+        attempt=$((attempt + 1))
+        sleep 2
+        echo -n "."
+    done
+    
+    echo ""
+    print_warning "$service_name took longer than expected to start"
+    return 1
+}
+
+# Create DynamoDB tables
+setup_dynamodb_tables() {
+    print_subheader "Setting up DynamoDB Tables"
+    setup_aws_env
+    
+    create_table_if_not_exists() {
+        local table_name=$1
+        shift
+        local table_exists=$(aws dynamodb describe-table --table-name "$table_name" --endpoint-url http://localhost:8000 --region us-east-1 2>/dev/null || echo "false")
+        
+        if [[ "$table_exists" == "false" ]]; then
+            print_info "Creating table: $table_name"
+            aws dynamodb create-table "$@" --endpoint-url http://localhost:8000 --region us-east-1 >/dev/null
+            print_success "Created table: $table_name"
+        else
+            print_info "Table $table_name already exists"
+        fi
+    }
+
+    create_table_if_not_exists "valthera-dev-users" \
+        --table-name valthera-dev-users \
+        --attribute-definitions AttributeName=user_id,AttributeType=S \
+        --key-schema AttributeName=user_id,KeyType=HASH \
+        --billing-mode PAY_PER_REQUEST
+
+    create_table_if_not_exists "valthera-dev-main" \
+        --table-name valthera-dev-main \
+        --attribute-definitions AttributeName=PK,AttributeType=S AttributeName=SK,AttributeType=S \
+        --key-schema AttributeName=PK,KeyType=HASH AttributeName=SK,KeyType=RANGE \
+        --billing-mode PAY_PER_REQUEST
+
+    create_table_if_not_exists "valthera-dev-videos" \
+        --table-name valthera-dev-videos \
+        --attribute-definitions AttributeName=video_id,AttributeType=S \
+        --key-schema AttributeName=video_id,KeyType=HASH \
+        --billing-mode PAY_PER_REQUEST
+
+    create_table_if_not_exists "valthera-dev-api-keys" \
+        --table-name valthera-dev-api-keys \
+        --attribute-definitions AttributeName=key_id,AttributeType=S AttributeName=user_id,AttributeType=S \
+        --key-schema AttributeName=key_id,KeyType=HASH \
+        --global-secondary-indexes '[{"IndexName":"UserIdIndex","KeySchema":[{"AttributeName":"user_id","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}]' \
+        --billing-mode PAY_PER_REQUEST
+}
+
+# Setup S3 buckets
+setup_s3_buckets() {
+    print_subheader "Setting up S3 Buckets"
+    setup_aws_env
+    
+    if aws s3 ls s3://valthera-dev-videos-local --endpoint-url http://localhost:4566 --region us-east-1 >/dev/null 2>&1; then
+        print_info "S3 bucket valthera-dev-videos-local already exists"
+    else
+        print_info "Creating S3 bucket: valthera-dev-videos-local"
+        aws s3 mb s3://valthera-dev-videos-local \
+            --endpoint-url http://localhost:4566 \
+            --region us-east-1 >/dev/null
+        print_success "Created S3 bucket: valthera-dev-videos-local"
+    fi
+
+    # Set CORS policy
+    aws s3api put-bucket-cors \
+        --bucket valthera-dev-videos-local \
+        --cors-configuration '{
+            "CORSRules": [
+                {
+                    "AllowedHeaders": ["*"],
+                    "AllowedMethods": ["GET", "PUT", "POST", "DELETE", "HEAD"],
+                    "AllowedOrigins": ["*"],
+                    "ExposeHeaders": ["ETag", "Content-Length", "Content-Type"]
+                }
+            ]
+        }' \
+        --endpoint-url http://localhost:4566 \
+        --region us-east-1 >/dev/null 2>&1
+}
+
+# Wait for ElasticMQ SQS to be ready
+wait_for_sqs() {
+    print_info "Waiting for ElasticMQ SQS to be ready..."
+    local max_attempts=30
+    local attempt=0
+    
+    while [ $attempt -lt $max_attempts ]; do
+        if curl -s http://localhost:9324 >/dev/null 2>&1; then
+            print_success "ElasticMQ SQS is ready!"
+            return 0
+        fi
+        
+        attempt=$((attempt + 1))
+        sleep 2
+        echo -n "."
+    done
+    
+    echo ""
+    print_error "ElasticMQ SQS failed to start"
+    return 1
+}
+
+# Setup SQS queues
+setup_sqs_queues() {
+    print_subheader "Setting up SQS Queues"
+    setup_aws_env
+    
+    # Wait for ElasticMQ to be ready first
+    if ! wait_for_sqs; then
+        print_error "Cannot setup SQS queues - ElasticMQ is not ready"
+        return 1
+    fi
+    
+    create_queue_if_not_exists() {
+        local queue_name=$1
+        local queue_exists=$(aws sqs get-queue-url --queue-name "$queue_name" --endpoint-url http://localhost:9324 --region us-east-1 2>/dev/null || echo "false")
+        
+        if [[ "$queue_exists" == "false" ]]; then
+            print_info "Creating SQS queue: $queue_name"
+            aws sqs create-queue \
+                --queue-name "$queue_name" \
+                --endpoint-url http://localhost:9324 \
+                --region us-east-1 >/dev/null
+            print_success "Created SQS queue: $queue_name"
+        else
+            print_info "SQS queue $queue_name already exists"
+        fi
+    }
+
+    create_queue_if_not_exists "valthera-dev-video-processor-queue"
+    create_queue_if_not_exists "valthera-dev-video-processor-dlq"
+}
+
+# Ensure sqs-admin is installed
+ensure_sqs_admin() {
+    if ! command -v sqs-admin &> /dev/null; then
+        print_info "sqs-admin not found, installing..."
+        if command -v npm &> /dev/null; then
+            npm install -g sqs-admin
+            if [ $? -eq 0 ]; then
+                print_success "sqs-admin installed successfully"
+            else
+                print_warning "Failed to install sqs-admin. You can install it manually with: npm install -g sqs-admin"
+            fi
+        else
+            print_warning "npm not found. Please install npm to use sqs-admin web interface"
+            print_info "You can still monitor SQS using AWS CLI"
+        fi
+    else
+        print_success "sqs-admin is already installed"
+    fi
+}
+
+# Setup Cognito
+setup_cognito() {
+    print_subheader "Setting up Cognito (Local)"
+    if [ -f "./scripts/setup-local-cognito.sh" ]; then
+        print_info "Running Cognito setup script..."
+        if ./scripts/setup-local-cognito.sh; then
+            print_success "Cognito setup completed successfully"
+        else
+            print_error "Cognito setup failed. Check the logs above for errors."
+            print_info "You can try running the setup manually: ./scripts/setup-local-cognito.sh"
+            return 1
+        fi
+    else
+        print_error "Cognito setup script not found at ./scripts/setup-local-cognito.sh"
+        print_info "Please ensure the script exists and is executable."
+        return 1
+    fi
+}
+
+# Setup Data Sources (S3 buckets)
+setup_datasources() {
+    print_subheader "Setting up Data Sources"
+    setup_aws_env
+    
+    # Wait for LocalStack to be ready
+    print_info "Waiting for LocalStack to be ready..."
+    for i in {1..30}; do
+        if curl -s http://localhost:4566/_localstack/health >/dev/null; then
+            print_success "LocalStack is ready"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            print_error "LocalStack failed to start"
+            return 1
+        fi
+        sleep 1
+    done
+    
+    # Create S3 buckets for local development
+    BUCKETS=("valthera-datasources" "valthera-processed" "valthera-temp")
+    
+    for bucket in "${BUCKETS[@]}"; do
+        print_info "Creating bucket: $bucket"
+        aws --endpoint-url=http://localhost:4566 s3 mb s3://$bucket 2>/dev/null || true
+        print_success "Bucket $bucket created"
+    done
+    
+    # Set up bucket policies for public read access (for local development)
+    for bucket in "${BUCKETS[@]}"; do
+        print_info "Setting up bucket policy for: $bucket"
+        
+        POLICY='{
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "PublicReadGetObject",
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": "s3:GetObject",
+                    "Resource": "arn:aws:s3:::'$bucket'/*"
+                }
+            ]
+        }'
+        
+        echo "$POLICY" | aws --endpoint-url=http://localhost:4566 s3api put-bucket-policy \
+            --bucket $bucket \
+            --policy file:///dev/stdin 2>/dev/null || true
+        
+        print_success "Bucket policy set for $bucket"
+    done
+    
+    # Create a test file in the datasources bucket
+    print_info "Creating test data file..."
+    echo "This is a test data file for local development" | \
+        aws --endpoint-url=http://localhost:4566 s3 cp - s3://valthera-datasources/test-data.txt
+    
+    print_success "Local data sources setup complete!"
+    print_info "Available buckets:"
+    for bucket in "${BUCKETS[@]}"; do
+        echo "  • s3://$bucket"
+    done
+}
+
+# Generate env-local.json from template
+generate_env_local() {
+    print_subheader "Setting up Environment Configuration"
+    
+    if [ -f "env-local.json" ]; then
+        print_info "env-local.json already exists"
+        return 0
+    fi
+    
+    if [ ! -f "env-local.template.json" ]; then
+        print_error "env-local.template.json not found"
+        print_info "Please ensure the template file exists"
+        return 1
+    fi
+    
+    print_info "Generating env-local.json from template..."
+    
+    # Copy the template
+    cp env-local.template.json env-local.json
+    
+    if [ $? -eq 0 ]; then
+        print_success "Generated env-local.json from template"
+        print_info "You can customize this file for your local environment"
+    else
+        print_error "Failed to generate env-local.json"
+        return 1
+    fi
+}
+
+# Command functions
+cmd_start() {
+    print_header "Starting Valthera Local Services"
+    check_docker
+    
+    print_info "Starting Docker services..."
+    docker-compose up -d
+    
+    # Wait for core services
+    wait_for_service "http://localhost:8000" "DynamoDB"
+    wait_for_service "http://localhost:4566/_localstack/health" "LocalStack"
+    
+    # Setup resources
+    setup_dynamodb_tables
+    setup_s3_buckets
+    setup_sqs_queues
+    ensure_sqs_admin
+    setup_datasources
+    
+    # Setup Cognito if container is running
+    print_info "Checking Cognito container status..."
+    if [ "$(get_container_status valthera-cognito-local)" = "running" ]; then
+        print_info "Cognito container is running, waiting for service to be ready..."
+        wait_for_service "http://localhost:9239" "Cognito-Local"
+        setup_cognito
+    else
+        print_warning "Cognito container is not running. Waiting for it to start..."
+        # Wait a bit more for the container to start
+        local cognito_attempts=0
+        while [ $cognito_attempts -lt 15 ] && [ "$(get_container_status valthera-cognito-local)" != "running" ]; do
+            sleep 2
+            cognito_attempts=$((cognito_attempts + 1))
+            echo -n "."
+        done
+        echo ""
+        
+        if [ "$(get_container_status valthera-cognito-local)" = "running" ]; then
+            print_success "Cognito container is now running"
+            wait_for_service "http://localhost:9239" "Cognito-Local"
+            setup_cognito
+        else
+            print_error "Cognito container failed to start. Check docker-compose logs."
+            print_info "You can try: docker-compose logs cognito-local"
+        fi
+    fi
+    
+    print_success "All AWS services started successfully!"
+    
+    # Start SAM API only (React app will be started manually)
+    print_subheader "Starting SAM API"
+    
+    # Create logs directory
+    mkdir -p logs
+    
+    # Start SAM API
+    start_sam_api
+    
+    echo ""
+    print_success "🎉 Backend services started!"
+    print_info "📁 Application logs are in: logs/"
+    print_info "🚀 To start React app manually: cd app && pnpm run dev"
+    cmd_status
+}
+
+cmd_start_force() {
+    print_header "Starting Valthera Local Services (Force Mode)"
+    print_info "Force mode will automatically kill conflicting processes"
+    check_docker
+    
+    print_info "Starting Docker services..."
+    docker-compose up -d
+    
+    # Wait for core services
+    wait_for_service "http://localhost:8000" "DynamoDB"
+    wait_for_service "http://localhost:4566/_localstack/health" "LocalStack"
+    
+    # Setup resources
+    setup_dynamodb_tables
+    setup_s3_buckets
+    setup_sqs_queues
+    ensure_sqs_admin
+    setup_datasources
+    
+    # Setup Cognito if container is running
+    print_info "Checking Cognito container status..."
+    if [ "$(get_container_status valthera-cognito-local)" = "running" ]; then
+        print_info "Cognito container is running, waiting for service to be ready..."
+        wait_for_service "http://localhost:9239" "Cognito-Local"
+        setup_cognito
+    else
+        print_warning "Cognito container is not running. Waiting for it to start..."
+        # Wait a bit more for the container to start
+        local cognito_attempts=0
+        while [ $cognito_attempts -lt 15 ] && [ "$(get_container_status valthera-cognito-local)" != "running" ]; do
+            sleep 2
+            cognito_attempts=$((cognito_attempts + 1))
+            echo -n "."
+        done
+        echo ""
+        
+        if [ "$(get_container_status valthera-cognito-local)" = "running" ]; then
+            print_success "Cognito container is now running"
+            wait_for_service "http://localhost:9239" "Cognito-Local"
+            setup_cognito
+        else
+            print_error "Cognito container failed to start. Check docker-compose logs."
+            print_info "You can try: docker-compose logs cognito-local"
+        fi
+    fi
+    
+    print_success "All AWS services started successfully!"
+    
+    # Start SAM API only (React app will be started manually)
+    print_subheader "Starting SAM API (Force Mode)"
+    
+    # Create logs directory
+    mkdir -p logs
+    
+    # Start SAM API with force mode
+    start_sam_api_force
+    
+    echo ""
+    print_success "🎉 Backend services started!"
+    print_info "📁 Application logs are in: logs/"
+    print_info "🚀 To start React app manually: cd app && pnpm run dev"
+    cmd_status
+}
+
+cmd_stop() {
+    print_header "Stopping Valthera Local Services"
+    
+    # Stop application services first
+    print_subheader "Stopping Application Services"
+    stop_app_process "SAM API" "$SAM_PID_FILE" "3000"
+    
+    # Note: React app is not automatically started, so we don't stop it here
+    # If you have a React app running manually, stop it with Ctrl+C
+    
+    # Stop Docker services
+    print_subheader "Stopping AWS Services"
+    docker-compose stop
+    
+    print_success "Backend services stopped"
+    print_info "💡 If you have React app running manually, stop it with Ctrl+C"
+}
+
+cmd_destroy() {
+    print_header "Destroying Valthera Local Services"
+    
+    # Stop application services first
+    print_subheader "Stopping Application Services"
+    stop_app_process "SAM API" "$SAM_PID_FILE" "3000"
+    
+    # Note: React app is not automatically started, so we don't stop it here
+    # If you have a React app running manually, stop it with Ctrl+C
+    
+    # Remove Docker services
+    print_subheader "Destroying AWS Services"
+    docker-compose down --volumes --remove-orphans
+    
+    # Remove any persistent data
+    if [ -d ".cognito-data" ]; then
+        print_info "Removing Cognito data..."
+        rm -rf .cognito-data
+    fi
+    
+    # Clean up log files and PID files
+    print_info "Cleaning up logs and PID files..."
+    rm -rf logs/
+    rm -f .valthera-*.pid
+    
+    print_success "Backend services destroyed and data removed"
+    print_info "💡 If you have React app running manually, stop it with Ctrl+C"
+}
+
+cmd_restart() {
+    print_header "Restarting Valthera Local Services"
+    cmd_stop
+    sleep 2
+    cmd_start
+}
+
+cmd_status() {
+    print_header "Valthera Local Services Status"
+    
+    # Check Docker
+    if docker info > /dev/null 2>&1; then
+        print_success "Docker is running"
+    else
+        print_error "Docker is not running"
+        return 1
+    fi
+    
+    echo ""
+    print_subheader "AWS Services (Docker)"
+    
+    for service_info in "${AWS_SERVICES[@]}"; do
+        IFS=':' read -r container_name service_name url <<< "$service_info"
+        status=$(get_container_status "$container_name")
+        
+        if [ "$status" = "running" ]; then
+            print_success "$service_name ($container_name): Running"
+            print_info "  URL: $url"
+            
+            # Test connectivity
+            if curl -s "$url" >/dev/null 2>&1 || curl -s "$url/health" >/dev/null 2>&1 || curl -s "$url/_localstack/health" >/dev/null 2>&1; then
+                print_info "  Status: ✅ Healthy"
+            else
+                print_warning "  Status: ⚠️  Starting/Unhealthy"
+            fi
+        else
+            print_error "$service_name ($container_name): Stopped"
+        fi
+        echo ""
+    done
+    
+    print_subheader "Application Services"
+    
+    # Check React App (not automatically managed)
+    local react_port_pids=$(get_processes_on_port "5173")
+    
+    if [ -n "$react_port_pids" ]; then
+        print_success "React App: Running (Manual PID: $react_port_pids)"
+        print_info "  URL: http://localhost:5173"
+        if curl -s "http://localhost:5173" >/dev/null 2>&1; then
+            print_info "  Status: ✅ Healthy"
+        else
+            print_warning "  Status: ⚠️  Starting/Unhealthy"
+        fi
+    else
+        print_info "React App: Not Running (Manual start required)"
+        print_info "  URL: http://localhost:5173"
+        print_info "  To start: cd app && pnpm run dev"
+    fi
+    echo ""
+    
+    # Check SAM API
+    local sam_pid=$(get_stored_pid "$SAM_PID_FILE")
+    local sam_port_pids=$(get_processes_on_port "3000")
+    
+    if [ -n "$sam_pid" ] && is_process_running "$sam_pid"; then
+        print_success "SAM API: Running (Tracked PID: $sam_pid)"
+        print_info "  URL: http://localhost:3000"
+        if curl -s "http://localhost:3000" >/dev/null 2>&1; then
+            print_info "  Status: ✅ Healthy"
+        else
+            print_warning "  Status: ⚠️  Starting/Unhealthy"
+        fi
+    elif [ -n "$sam_port_pids" ]; then
+        print_warning "SAM API: Running (Untracked PID: $sam_port_pids)"
+        print_info "  URL: http://localhost:3000"
+        if curl -s "http://localhost:3000" >/dev/null 2>&1; then
+            print_info "  Status: ✅ Healthy"
+        else
+            print_warning "  Status: ⚠️  Starting/Unhealthy"
+        fi
+    else
+        print_warning "SAM API: Not Running"
+        print_info "  URL: http://localhost:3000"
+        print_info "  Status: ❌ Not running"
+    fi
+    echo ""
+    
+    # Show resource status if services are running
+    if [ "$(get_container_status valthera-dynamodb-local)" = "running" ]; then
+        show_resources
+    fi
+    
+    # Show Cognito configuration if available
+    if [ -f "app/.env.local" ]; then
+        echo ""
+        print_subheader "Cognito Configuration"
+        local user_pool_id=$(grep VITE_COGNITO_USER_POOL_ID app/.env.local | cut -d'=' -f2 2>/dev/null || echo "Not configured")
+        local client_id=$(grep VITE_COGNITO_USER_POOL_CLIENT_ID app/.env.local | cut -d'=' -f2 2>/dev/null || echo "Not configured")
+        
+        echo "  • User Pool ID: $user_pool_id"
+        echo "  • Client ID: $client_id"
+        echo "  • Test Email: test@valthera.com"
+        echo "  • Test Password: TestPass123!"
+    fi
+}
+
+cmd_logs() {
+    local service=${1:-}
+    
+    if [ -z "$service" ]; then
+        print_header "All Service Logs (last 50 lines)"
+        docker-compose logs --tail=50
+    else
+        case $service in
+            "dynamodb"|"db")
+                print_header "DynamoDB Logs"
+                docker logs valthera-dynamodb-local --tail=50 -f
+                ;;
+            "localstack"|"s3"|"sqs")
+                print_header "LocalStack Logs"
+                docker logs valthera-localstack --tail=50 -f
+                ;;
+            "video-processor"|"worker"|"vp")
+                print_header "Video Processor Logs"
+                echo "Container logs (last 20 lines):"
+                docker logs valthera-video-processor --tail=20
+                echo ""
+                if [ -f "logs/video-processor/worker.log" ]; then
+                    echo "Worker log file (last 10 lines):"
+                    tail -10 logs/video-processor/worker.log
+                else
+                    print_warning "Worker log file not found at logs/video-processor/worker.log"
+                fi
+                ;;
+            "sqs-local"|"elasticmq")
+                print_header "ElasticMQ SQS Logs"
+                docker logs valthera-sqs-local --tail=50 -f
+                ;;            "cognito")
+                print_header "Cognito-Local Logs"
+                docker logs valthera-cognito-local --tail=50 -f
+                ;;
+            *)
+                print_error "Unknown service: $service"
+                print_info "Available services: video-processor, dynamodb, localstack, sqs-local, cognito"
+                exit 1
+                ;;
+        esac
+    fi
+}
+
+show_resources() {
+    print_subheader "Resources"
+    setup_aws_env
+    
+    # DynamoDB Tables
+    if [ "$(get_container_status valthera-dynamodb-local)" = "running" ]; then
+        echo "📊 DynamoDB Tables:"
+        tables=$(aws dynamodb list-tables --endpoint-url http://localhost:8000 --region us-east-1 --query 'TableNames[]' --output text 2>/dev/null || echo "")
+        if [ -n "$tables" ]; then
+            for table in $tables; do
+                echo "  • $table"
+            done
+        else
+            echo "  • No tables found"
+        fi
+        echo ""
+    fi
+    
+    # S3 Buckets
+    if [ "$(get_container_status valthera-localstack)" = "running" ]; then
+        echo "🪣 S3 Buckets:"
+        buckets=$(aws s3 ls --endpoint-url http://localhost:4566 --region us-east-1 2>/dev/null || echo "")
+        if [ -n "$buckets" ]; then
+            echo "$buckets" | awk '{print "  • " $3}'
+        else
+            echo "  • No buckets found"
+        fi
+        echo ""
+        
+        echo "📫 SQS Queues:"
+        queues=$(aws sqs list-queues --endpoint-url http://localhost:9324 --region us-east-1 --query 'QueueUrls[]' --output text 2>/dev/null || echo "")
+        if [ -n "$queues" ]; then
+            for queue in $queues; do
+                queue_name=$(basename "$queue")
+                echo "  • $queue_name"
+            done
+        else
+            echo "  • No queues found"
+        fi
+    fi
+}
+
+cmd_urls() {
+    print_header "Service URLs & Endpoints"
+    
+    echo "🌐 Web Interfaces:"
+    echo "  • LocalStack Health: http://localhost:4566/_localstack/health"
+    echo "  • LocalStack Dashboard: http://localhost:4566/_localstack/dashboard"
+    echo ""
+    
+    echo "🔗 API Endpoints:"
+    echo "  • DynamoDB: http://localhost:8000"
+    echo "  • S3: http://localhost:4566"
+    echo "  • SQS: http://localhost:9324"
+    echo "  • Cognito: http://localhost:9239"
+    echo ""
+    
+    echo "🛠️ AWS CLI Examples:"
+    echo "  • DynamoDB: aws dynamodb list-tables --endpoint-url http://localhost:8000"
+    echo "  • S3: aws s3 ls --endpoint-url http://localhost:4566"
+    echo "  • SQS: aws sqs list-queues --endpoint-url http://localhost:9324"
+    echo "  • Cognito: aws cognito-idp list-user-pools --max-results 10 --endpoint-url http://localhost:9239"
+    echo ""
+    
+    echo "⚙️ Environment Variables:"
+    echo "  export AWS_ACCESS_KEY_ID=local"
+    echo "  export AWS_SECRET_ACCESS_KEY=local"
+    echo "  export AWS_DEFAULT_REGION=us-east-1"
+}
+
+cmd_apps() {
+    local action=${1:-help}
+    
+    case $action in
+        "start")
+            print_header "Starting Application Services"
+            mkdir -p logs
+            print_info "Starting SAM API only (React app is manual)"
+            start_sam_api
+            print_success "SAM API started"
+            print_info "To start React app manually: cd app && pnpm run dev"
+            print_info "View logs: tail -f logs/sam.log"
+            print_info "Follow-only ProjectGetFunction: tail -f logs/sam.log | grep -E 'ProjectGetFunction|/api/projects'"
+            ;;
+        "stop")
+            print_header "Stopping Application Services"
+            stop_app_process "SAM API" "$SAM_PID_FILE"
+            print_success "SAM API stopped"
+            print_info "💡 If you have React app running manually, stop it with Ctrl+C"
+            ;;
+        "restart")
+            print_header "Restarting Application Services"
+            stop_app_process "SAM API" "$SAM_PID_FILE"
+            sleep 2
+            start_sam_api
+            print_success "SAM API restarted"
+            print_info "💡 If you have React app running manually, restart it manually"
+            print_info "View logs: tail -f logs/sam.log"
+            ;;
+        "logs")
+            local service=${2:-}
+            if [ -z "$service" ]; then
+                print_header "Application Logs"
+                echo "Available logs:"
+                echo "  ./valthera-local apps logs react"
+                echo "  ./valthera-local apps logs sam"
+                echo "\nCommon filters:"
+                echo "  tail -f logs/sam.log | grep ProjectGetFunction"
+                echo "  tail -f logs/sam.log | grep '/api/projects'"
+            elif [ "$service" = "react" ]; then
+                print_header "React App Logs"
+                tail -f logs/react.log 2>/dev/null || print_error "React log not found"
+            elif [ "$service" = "sam" ]; then
+                print_header "SAM API Logs"
+                echo "Tip: tail -f logs/sam.log | grep -E 'Project|Concept|Datasource'"
+                tail -f logs/sam.log 2>/dev/null || print_error "SAM log not found"
+            else
+                print_error "Unknown service: $service. Use 'react' or 'sam'"
+            fi
+            ;;
+        "sqs")
+            cmd_sqs "$2" "$3" "$4"
+            ;;
+        "debug")
+            cmd_debug "$2"
+            ;;        "codes")
+            print_header "Cognito Verification Codes"
+            print_info "Watching for verification codes in cognito-local logs..."
+            print_info "Sign up in your app, then check here for the code!"
+            echo ""
+            docker logs -f valthera-cognito-local 2>&1 | grep -E "(Code:|Confirmation Code)" --line-buffered
+            ;;
+        *)
+            print_header "Application Management"
+            echo "Usage: ./valthera-local apps <command>"
+            echo ""
+            echo "Commands:"
+            echo "  start    - Start SAM API only (React app is manual)"
+            echo "  stop     - Stop SAM API only (React app is manual)"
+            echo "  restart  - Restart SAM API only (React app is manual)"
+            echo "  logs     - Show logs (react/sam)"
+            echo ""
+            echo "Note: React app is not automatically managed."
+            echo "To start React app: cd app && pnpm run dev"
+            ;;
+    esac
+}
+
+cmd_test() {
+    print_header "Testing Services"
+    setup_aws_env
+    
+    local all_passed=true
+    
+    # Test DynamoDB
+    print_info "Testing DynamoDB..."
+    if aws dynamodb list-tables --endpoint-url http://localhost:8000 --region us-east-1 >/dev/null 2>&1; then
+        print_success "DynamoDB: OK"
+    else
+        print_error "DynamoDB: Failed"
+        all_passed=false
+    fi
+    
+    # Test LocalStack
+    print_info "Testing LocalStack..."
+    if curl -s http://localhost:4566/_localstack/health >/dev/null 2>&1; then
+        print_success "LocalStack: OK"
+    else
+        print_error "LocalStack: Failed"
+        all_passed=false
+    fi
+    
+    # Test Cognito
+    print_info "Testing Cognito..."
+    if curl -s http://localhost:9239 >/dev/null 2>&1; then
+        print_success "Cognito: OK"
+        
+        # Run full cognito test if available
+        if [ -f "./test-cognito-local.sh" ]; then
+            print_info "Running full Cognito test..."
+            if ./test-cognito-local.sh >/dev/null 2>&1; then
+                print_success "Cognito authentication: OK"
+            else
+                print_warning "Cognito authentication: Failed (may need setup)"
+            fi
+        fi
+    else
+        print_error "Cognito: Failed"
+        all_passed=false
+    fi
+    
+    if $all_passed; then
+        print_success "All services are working correctly!"
+    else
+        print_error "Some services failed tests"
+        exit 1
+    fi
+}
+
+cmd_clean() {
+    print_header "Cleaning Up Resources"
+    setup_aws_env
+    
+    # Clean DynamoDB tables
+    if [ "$(get_container_status valthera-dynamodb-local)" = "running" ]; then
+        print_info "Cleaning DynamoDB tables..."
+        tables=$(aws dynamodb list-tables --endpoint-url http://localhost:8000 --region us-east-1 --query 'TableNames[]' --output text 2>/dev/null || echo "")
+        for table in $tables; do
+            if [ -n "$table" ]; then
+                print_info "Deleting table: $table"
+                aws dynamodb delete-table --table-name "$table" --endpoint-url http://localhost:8000 --region us-east-1 >/dev/null
+            fi
+        done
+    fi
+    
+    # Clean S3 buckets
+    if [ "$(get_container_status valthera-localstack)" = "running" ]; then
+        print_info "Cleaning S3 buckets..."
+        buckets=$(aws s3 ls --endpoint-url http://localhost:4566 --region us-east-1 2>/dev/null | awk '{print $3}' || echo "")
+        for bucket in $buckets; do
+            if [ -n "$bucket" ]; then
+                print_info "Emptying and deleting bucket: $bucket"
+                aws s3 rm s3://"$bucket" --recursive --endpoint-url http://localhost:4566 --region us-east-1 >/dev/null 2>&1 || true
+                aws s3 rb s3://"$bucket" --endpoint-url http://localhost:4566 --region us-east-1 >/dev/null 2>&1 || true
+            fi
+        done
+    fi
+    
+    print_success "Resources cleaned"
+}
+
+cmd_rebuild() {
+    print_header "Rebuilding Valthera Local Environment"
+    
+    # Check prerequisites
+    print_info "Checking prerequisites..."
+    
+    # Check if Docker is running
+    if ! docker info >/dev/null 2>&1; then
+        print_error "Docker is not running. Please start Docker and try again."
+        exit 1
+    fi
+    print_success "Docker is running"
+    
+    # Check if AWS CLI is available (for LocalStack operations)
+    if command -v aws &> /dev/null; then
+        print_success "AWS CLI is available"
+    else
+        print_warning "AWS CLI not found - some features may not work"
+    fi
+    
+    # Stop any existing services first
+    print_info "Stopping existing services..."
+    stop_app_process "React App" "$REACT_PID_FILE" "5173" || true
+    stop_app_process "SAM API" "$SAM_PID_FILE" "3000" || true
+    
+    # Also kill any processes on port 3000
+    local port_3000_pids=$(get_processes_on_port "3000")
+    if [ -n "$port_3000_pids" ]; then
+        print_info "Killing processes on port 3000: $port_3000_pids"
+        for pid in $port_3000_pids; do
+            kill -9 "$pid" 2>/dev/null || true
+        done
+        sleep 2
+    fi
+    
+    # Step 1: Clean previous builds
+    print_subheader "Step 1: Cleaning previous builds"
+    if [ -f "./scripts/clean.sh" ]; then
+        ./scripts/clean.sh
+    else
+        print_warning "clean.sh not found, cleaning manually..."
+        rm -rf .aws-sam/
+        rm -rf lambdas-built/
+    fi
+
+    # Step 2: Build Lambda Functions and Layers
+    print_subheader "Step 2: Building Lambda Functions and Layers"
+    if [ -f "./scripts/build-lambdas.sh" ]; then
+        ./scripts/build-lambdas.sh
+    else
+        print_error "build-lambdas.sh not found"
+        exit 1
+    fi
+    
+    # Step 3: Build SAM Application
+    print_subheader "Step 3: Building SAM Application"
+    if command -v sam &> /dev/null; then
+        print_info "Building SAM application..."
+        sam build --use-container
+        print_success "SAM build completed"
+    else
+        print_warning "SAM CLI not found, skipping SAM build"
+    fi
+    
+    # Step 4: Setup Local AWS Services
+    print_subheader "Step 4: Setting up Local AWS Services"
+    print_info "Starting Docker services..."
+    docker-compose up -d
+    
+    # Wait for core services
+    wait_for_service "http://localhost:8000" "DynamoDB"
+    wait_for_service "http://localhost:4566/_localstack/health" "LocalStack"
+    
+    # Setup resources
+    setup_dynamodb_tables
+    setup_s3_buckets
+    setup_sqs_queues
+    ensure_sqs_admin
+    setup_datasources
+    
+    # Step 5: Setup Cognito
+    print_subheader "Step 5: Setting up Cognito"
+    if [ "$(get_container_status valthera-cognito-local)" = "running" ]; then
+        wait_for_service "http://localhost:9239" "Cognito-Local"
+        setup_cognito
+    fi
+    
+    # Step 7: Test Services
+    print_subheader "Step 7: Testing Services"
+    
+    print_info "Testing Cognito..."
+    if curl -s http://localhost:9239 >/dev/null; then
+        print_success "Cognito Local is ready"
+    else
+        print_error "Cognito Local is not ready"
+    fi
+    
+    print_info "Testing DynamoDB..."
+    if curl -s http://localhost:8000 >/dev/null; then
+        print_success "DynamoDB Local is ready"
+    else
+        print_error "DynamoDB Local is not ready"
+    fi
+    
+    print_info "Testing LocalStack..."
+    if curl -s http://localhost:4566/_localstack/health >/dev/null; then
+        print_success "LocalStack is ready"
+    else
+        print_error "LocalStack is not ready"
+    fi
+    
+    # Step 8: Start API (if SAM is available)
+    print_subheader "Step 8: Starting API Server"
+    if command -v sam &> /dev/null; then
+        print_info "Starting SAM local API..."
+        # Start SAM in background
+        sam local start-api -t template.yaml \
+            --env-vars env-local.json \
+            --host 0.0.0.0 \
+            --port 3000 \
+            --debug \
+            --warm-containers LAZY \
+            > logs/sam.log 2>&1 &
+        SAM_PID=$!
+        echo $SAM_PID > .sam-api.pid
+        print_success "SAM API started on http://localhost:3000"
+        
+        # Store the SAM PID for later cleanup
+        store_pid "$SAM_PID" "$SAM_PID_FILE"
+    else
+        print_warning "SAM CLI not found, skipping API server"
+    fi
+    
+    print_header "Rebuild and Start Complete!"
+    
+    echo ""
+    print_success "✅ All backend services are running:"
+    echo "  • DynamoDB Local: http://localhost:8000"
+    echo "  • LocalStack (S3/SQS): http://localhost:4566"
+    echo "  • Cognito Local: http://localhost:9239"
+    if command -v sam &> /dev/null; then
+        echo "  • SAM API: http://localhost:3000"
+    fi
+    echo ""
+    print_info "🚀 Next Steps:"
+    echo "1. Start your React development server:"
+    echo "   cd app && pnpm run dev"
+    echo ""
+    echo "2. Test your application at:"
+    echo "   http://localhost:5173"
+    echo ""
+    print_info "📋 Important Notes:"
+    echo "• Lambda layers have been rebuilt with Poetry"
+    echo "• All AWS services are running in Docker containers"
+    echo "• SAM API is running locally (if SAM CLI is available)"
+    echo ""
+    print_info "Test user credentials:"
+    echo "  Email: test@valthera.com"
+    echo "  Password: TestPass123!"
+    echo ""
+    print_success "Your backend development environment is ready! 🎉"
+    echo ""
+    print_info "🔐 Cognito Configuration:"
+    echo "  • User Pool ID: $(grep VITE_COGNITO_USER_POOL_ID app/.env.local | cut -d'=' -f2)"
+    echo "  • Client ID: $(grep VITE_COGNITO_USER_POOL_CLIENT_ID app/.env.local | cut -d'=' -f2)"
+    echo "  • Test Email: test@valthera.com"
+    echo "  • Test Password: TestPass123!"
+    
+    # Ask if user wants to start the frontend
+    echo ""
+    read -p "🚀 Start React development server now? (y/n): " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        print_info "Starting React development server..."
+        start_react_app
+        print_success "🎉 Complete setup finished!"
+        print_info "Frontend will be available at: http://localhost:5173"
+    else
+        print_info "To start the frontend later, run: cd app && pnpm run dev"
+    fi
+}
+
+cmd_help() {
+    echo -e "${BOLD}${CYAN}Valthera Local Development CLI${NC}"
+    echo ""
+    echo -e "${BOLD}USAGE:${NC}"
+    echo "    ./valthera-local <command> [options]"
+    echo ""
+    echo -e "${BOLD}COMMANDS:${NC}"
+    echo -e "    ${GREEN}start${NC}        Start backend services (Docker + SAM API)"
+    echo -e "    ${GREEN}start-force${NC}  Start backend services (auto-kill conflicts)"
+    echo -e "    ${GREEN}stop${NC}         Stop backend services (keeps data)"
+    echo -e "    ${GREEN}restart${NC}      Restart backend services"
+    echo -e "    ${GREEN}destroy${NC}      Stop services and remove all data"
+    echo -e "    ${GREEN}rebuild${NC}      Complete rebuild (clean + build + setup + start)"
+    echo -e "    ${GREEN}status${NC}       Show status of all services and resources"
+    echo -e "    ${GREEN}apps${NC} <cmd>   Manage application services (start/stop/restart/logs)"
+    echo -e "    ${GREEN}logs${NC} [svc]   Show logs (all or specific service: dynamodb, localstack, cognito)"
+    echo -e "    ${GREEN}urls${NC}         Show all service URLs and endpoints"
+    echo -e "    ${GREEN}test${NC}         Test connectivity to all services"
+    echo -e "    ${GREEN}sqs${NC} <cmd>     SQS debug commands (send/stats/peek/web)"
+    echo -e "    ${GREEN}debug${NC} <cmd>   Debug commands (video-processor/sqs-test)"
+    echo -e "    ${GREEN}codes${NC}        Watch for Cognito verification codes"
+    echo -e "    ${GREEN}setup-cognito${NC} Manually setup Cognito (if auto-setup fails)"
+    echo -e "    ${GREEN}test-cognito${NC}  Test Cognito setup and configuration"
+    echo -e "    ${GREEN}install-deps${NC}  Install React app dependencies"
+    echo -e "    ${GREEN}check-ports${NC}   Check and resolve port conflicts"
+    echo -e "    ${GREEN}generate-env${NC}  Generate env-local.json from template"
+    echo -e "    ${GREEN}clean${NC}        Clean up all resources (tables, buckets, queues)"
+    echo -e "    ${GREEN}help${NC}         Show this help message"
+    echo ""
+    echo -e "${BOLD}EXAMPLES:${NC}"
+    echo "    ./valthera-local start              # Start backend services"
+    echo "    ./valthera-local start-force        # Start with auto-kill conflicts"
+    echo "    ./valthera-local rebuild            # Complete rebuild and start"
+    echo "    ./valthera-local restart            # Restart backend services"
+    echo "    ./valthera-local apps restart       # Restart just SAM API"
+    echo "    ./valthera-local apps logs react    # Show React app logs"
+    echo "    ./valthera-local status             # Check what's running"
+    echo "    ./valthera-local setup-cognito      # Manually setup Cognito"
+    echo "    ./valthera-local install-deps       # Install React dependencies"
+    echo "    ./valthera-local check-ports        # Check and resolve port conflicts"
+    echo "    ./valthera-local generate-env       # Generate env-local.json"
+    echo "    ./valthera-local destroy            # Nuclear option - remove everything"
+    echo ""
+    echo -e "${BOLD}AWS SERVICES:${NC}"
+    echo "    • DynamoDB Local (port 8000)"
+    echo "    • LocalStack - S3, SQS (port 4566)"
+    echo "    • Cognito Local (port 9239)"
+    echo ""
+    echo -e "${BOLD}APPLICATION SERVICES:${NC}"
+    echo "    • SAM API (port 3000) - Automatically started"
+    echo "    • React App (port 5173) - Manual start: cd app && pnpm run dev"
+    echo ""
+    echo -e "${BOLD}RESOURCES CREATED:${NC}"
+    echo "    • DynamoDB: valthera-dev-users, valthera-dev-main, valthera-dev-videos"
+    echo "    • S3: valthera-datasources, valthera-processed, valthera-temp"
+    echo "    • SQS: valthera-dev-video-processor-queue, valthera-dev-video-processor-dlq"
+    echo "    • Cognito: Dynamically created user pool with test user"
+    echo ""
+    echo -e "${BOLD}REBUILD PROCESS:${NC}"
+    echo "    • Cleans previous builds and Docker resources"
+    echo "    • Rebuilds Lambda layers with Poetry"
+    echo "    • Builds SAM application"
+    echo "    • Sets up all AWS services (DynamoDB, LocalStack, Cognito)"
+    echo "    • Creates S3 buckets and DynamoDB tables"
+    echo "    • Configures Cognito with test user"
+    echo "    • Automatically configures frontend environment"
+    echo "    • Starts all backend services"
+    echo ""
+    echo "For more information, visit: https://github.com/your-repo/valthera-infra"
+}
+
+# SQS Debug and Testing Functions
+cmd_sqs() {
+    local action=${1:-help}
+    
+    case $action in
+        "send")
+            local message_type=${2:-video}
+            local message_id=${3:-"test-$(date +%s)"}
+            
+            print_header "Sending SQS Test Message"
+            setup_aws_env
+            
+            if ! wait_for_sqs; then
+                print_error "SQS service not available"
+                return 1
+            fi
+            
+            case $message_type in
+                "video")
+                    print_info "Sending video processing message..."
+                    local s3_key="test-videos/${message_id}.mp4"
+                    local message_body=$(cat <<MSGEOF
+{
+    "action": "process_video",
+    "video_id": "$message_id",
+    "s3_key": "$s3_key",
+    "bucket": "valthera-processed",
+    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "metadata": {
+        "source": "valthera-local-debug",
+        "environment": "local"
+    }
+}
+MSGEOF
+)
+                    ;;
+                "training")
+                    print_info "Sending training message..."
+                    local message_body=$(cat <<MSGEOF
+{
+    "action": "start_training",
+    "trainingId": "$message_id",
+    "conceptId": "test-concept-123",
+    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "config": {
+        "epochs": 10,
+        "batch_size": 32,
+        "learning_rate": 0.001
+    },
+    "metadata": {
+        "source": "valthera-local-debug",
+        "environment": "local"
+    }
+}
+MSGEOF
+)
+                    ;;
+                *)
+                    print_error "Unknown message type: $message_type"
+                    print_info "Available types: video, training"
+                    return 1
+                    ;;
+            esac
+            
+            local queue_url="http://localhost:9324/queue/video-processor-queue"
+            if [ "$message_type" = "training" ]; then
+                queue_url="http://localhost:9324/queue/training-queue"
+            fi
+            
+            print_info "Message ID: $message_id"
+            print_info "Queue URL: $queue_url"
+            print_info "Sending message..."
+            
+            local result=$(aws sqs send-message \
+                --queue-url "$queue_url" \
+                --message-body "$message_body" \
+                --endpoint-url http://localhost:9324 \
+                --region us-east-1 \
+                --output json 2>/dev/null)
+            
+            if [ $? -eq 0 ]; then
+                local aws_message_id=$(echo "$result" | jq -r ".MessageId" 2>/dev/null || echo "unknown")
+                print_success "Message sent successfully!"
+                print_info "AWS Message ID: $aws_message_id"
+                print_info "Custom Message ID: $message_id"
+            else
+                print_error "Failed to send message"
+                return 1
+            fi
+            ;;
+            
+        "stats")
+            print_header "SQS Queue Statistics"
+            setup_aws_env
+            
+            if ! wait_for_sqs; then
+                print_error "SQS service not available"
+                return 1
+            fi
+            
+            local queues=("video-processor-queue" "video-processor-dlq" "training-queue" "training-dlq")
+            
+            printf "%-30s %-10s %-10s %-15s\n" "Queue Name" "Visible" "In-Flight" "Status"
+            printf "%-30s %-10s %-10s %-15s\n" "----------" "-------" "---------" "------"
+            
+            for queue in "${queues[@]}"; do
+                local queue_url="http://localhost:9324/queue/$queue"
+                local attrs=$(aws sqs get-queue-attributes \
+                    --queue-url "$queue_url" \
+                    --attribute-names ApproximateNumberOfMessages,ApproximateNumberOfMessagesNotVisible \
+                    --endpoint-url http://localhost:9324 \
+                    --region us-east-1 \
+                    --output json 2>/dev/null || echo "{}")
+                
+                if [ "$attrs" != "{}" ]; then
+                    local visible=$(echo "$attrs" | jq -r ".Attributes.ApproximateNumberOfMessages // \"0\"" 2>/dev/null || echo "0")
+                    local in_flight=$(echo "$attrs" | jq -r ".Attributes.ApproximateNumberOfMessagesNotVisible // \"0\"" 2>/dev/null || echo "0")
+                    local status="✅ Active"
+                else
+                    local visible="N/A"
+                    local in_flight="N/A"
+                    local status="❌ Error"
+                fi
+                
+                printf "%-30s %-10s %-10s %-15s\n" "$queue" "$visible" "$in_flight" "$status"
+            done
+            ;;
+            
+        "peek")
+            local queue_name=${2:-"video-processor-queue"}
+            print_header "Peeking at SQS Queue: $queue_name"
+            setup_aws_env
+            
+            if ! wait_for_sqs; then
+                print_error "SQS service not available"
+                return 1
+            fi
+            
+            local queue_url="http://localhost:9324/queue/$queue_name"
+            print_info "Queue URL: $queue_url"
+            
+            local messages=$(aws sqs receive-message \
+                --queue-url "$queue_url" \
+                --max-number-of-messages 5 \
+                --wait-time-seconds 2 \
+                --endpoint-url http://localhost:9324 \
+                --region us-east-1 \
+                --output json 2>/dev/null || echo "{}")
+            
+            local message_count=$(echo "$messages" | jq -r ".Messages | length // 0" 2>/dev/null || echo "0")
+            
+            if [ "$message_count" -eq 0 ]; then
+                print_info "No messages in queue"
+            else
+                print_success "Found $message_count message(s):"
+                echo ""
+                echo "$messages" | jq -r ".Messages[] | \"Message ID: \" + .MessageId + \"\nBody: \" + .Body + \"\n---\"" 2>/dev/null || echo "$messages"
+            fi
+            ;;
+            
+        "web")
+            print_header "Opening SQS Web Interface"
+            print_info "ElasticMQ Web Interface: http://localhost:9325"
+            
+            if command -v open &> /dev/null; then
+                open http://localhost:9325
+                print_success "Web interface opened in browser"
+            elif command -v xdg-open &> /dev/null; then
+                xdg-open http://localhost:9325
+                print_success "Web interface opened in browser"
+            else
+                print_info "Please open http://localhost:9325 in your browser"
+            fi
+            ;;
+            
+        "logs")
+            local follow_mode=${2:-""}
+            print_header "SQS Processing Logs"
+            
+            if [ "$(get_container_status valthera-video-processor)" != "running" ]; then
+                print_error "Video processor container is not running"
+                print_info "Start it with: ./valthera-local start"
+                return 1
+            fi
+            
+            if [ "$follow_mode" = "follow" ] || [ "$follow_mode" = "-f" ]; then
+                print_info "Following SQS processing logs (Ctrl+C to stop)..."
+                echo ""
+                docker logs valthera-video-processor --follow
+            else
+                print_info "Showing recent SQS processing logs..."
+                echo ""
+                docker logs valthera-video-processor --tail=30
+            fi
+            ;;
+            
+        *)
+            print_header "SQS Debug Commands"
+            echo "Usage: ./valthera-local sqs <command> [options]"
+            echo ""
+            echo "Commands:"
+            echo "  send <type> [id]     Send test message (video|training)"
+            echo "  stats                Show queue statistics"
+            echo "  peek [queue]         Peek at messages in queue"
+            echo "  logs [follow]        Show SQS processing logs"
+            echo "  web                  Open SQS web interface"
+            echo ""
+            echo "Examples:"
+            echo "  ./valthera-local sqs send video my-test-video"
+            echo "  ./valthera-local sqs send training my-test-training"
+            echo "  ./valthera-local sqs stats"
+            echo "  ./valthera-local sqs peek video-processor-queue"
+            echo "  ./valthera-local sqs logs"
+            echo "  ./valthera-local sqs logs follow"
+            echo "  ./valthera-local sqs web"
+            ;;
+    esac
+}
+
+# Enhanced Debug Commands
+cmd_debug() {
+    local action=${1:-help}
+    
+    case $action in
+        "video-processor")
+            print_header "Video Processor Debug"
+            
+            if [ "$(get_container_status valthera-video-processor)" = "running" ]; then
+                print_success "Video processor container is running"
+            else
+                print_error "Video processor container is not running"
+                print_info "Start it with: ./valthera-local start"
+                return 1
+            fi
+            
+            print_subheader "Container Logs (last 20 lines)"
+            docker logs --tail=20 valthera-video-processor
+            echo ""
+            
+            if [ -f "logs/video-processor/worker.log" ]; then
+                print_subheader "Worker Log File (last 10 lines)"
+                tail -10 logs/video-processor/worker.log
+                echo ""
+            else
+                print_warning "Worker log file not found at logs/video-processor/worker.log"
+            fi
+            
+            print_subheader "Environment Variables"
+            docker exec valthera-video-processor env | grep -E "(SQS|S3|AWS)" | sort
+            echo ""
+            ;;
+            
+        "sqs-test")
+            print_header "SQS Integration Test"
+            
+            print_info "Step 1: Sending test message..."
+            cmd_sqs send video "debug-test-$(date +%s)"
+            echo ""
+            
+            print_info "Step 2: Waiting 3 seconds for processing..."
+            sleep 3
+            echo ""
+            
+            print_info "Step 3: Checking queue statistics..."
+            cmd_sqs stats
+            echo ""
+            
+            print_info "Step 4: Recent video processor logs..."
+            if [ -f "logs/video-processor/worker.log" ]; then
+                tail -5 logs/video-processor/worker.log
+            else
+                docker logs --tail=5 valthera-video-processor
+            fi
+            ;;
+            
+        *)
+            print_header "Debug Commands"
+            echo "Usage: ./valthera-local debug <command>"
+            echo ""
+            echo "Commands:"
+            echo "  video-processor      Debug video processor container"
+            echo "  sqs-test             Test SQS message flow end-to-end"
+            echo ""
+            echo "Examples:"
+            echo "  ./valthera-local debug video-processor"
+            echo "  ./valthera-local debug sqs-test"
+            ;;
+    esac
+}
+# Main command dispatcher
+main() {
+    local command=${1:-help}
+    
+    case $command in
+        "start"|"up")
+            cmd_start
+            ;;
+        "start-force"|"up-force")
+            cmd_start_force
+            ;;
+        "stop"|"down")
+            cmd_stop
+            ;;
+        "restart")
+            cmd_restart
+            ;;
+        "destroy"|"nuke")
+            cmd_destroy
+            ;;
+        "rebuild")
+            cmd_rebuild
+            ;;
+        "status"|"ps")
+            cmd_status
+            ;;
+        "apps")
+            cmd_apps "$2" "$3"
+            ;;
+        "logs")
+            cmd_logs "$2"
+            ;;
+        "urls"|"endpoints")
+            cmd_urls
+            ;;
+        "test"|"check")
+            cmd_test
+            ;;
+        "clean"|"reset")
+            cmd_clean
+            ;;
+        "sqs")
+            cmd_sqs "$2" "$3" "$4"
+            ;;
+        "debug")
+            cmd_debug "$2"
+            ;;        "codes")
+            print_header "🔢 Cognito Verification Codes"
+            print_info "Watching cognito-local logs for verification codes..."
+            print_info "💡 In another terminal, sign up in your app to see codes here!"
+            echo ""
+            docker logs -f valthera-cognito-local 2>&1 | grep -E "(Code:|Username:|Destination:)" --line-buffered | while read line; do
+                if [[ $line == *"Code:"* ]]; then
+                    echo -e "${GREEN}🔑 VERIFICATION CODE: $(echo $line | grep -o 'Code:[[:space:]]*[0-9]*' | cut -d':' -f2 | tr -d ' ')${NC}"
+                else
+                    echo "$line"
+                fi
+            done
+            ;;
+        "setup-cognito")
+            print_header "🔐 Manual Cognito Setup"
+            print_info "Setting up Cognito manually..."
+            setup_cognito
+            ;;
+        "test-cognito")
+            print_header "🧪 Test Cognito Setup"
+            print_info "Running Cognito setup tests..."
+            if [ -f "./test-cognito-setup.sh" ]; then
+                ./test-cognito-setup.sh
+            else
+                print_error "test-cognito-setup.sh not found"
+                exit 1
+            fi
+            ;;
+        "install-deps")
+            print_header "📦 Install React Dependencies"
+            print_info "Installing React app dependencies..."
+            if [ ! -d "app" ]; then
+                print_error "React app directory 'app' not found"
+                exit 1
+            fi
+            
+            if ! command -v pnpm &> /dev/null; then
+                print_error "pnpm is not installed or not in PATH"
+                print_info "Please install pnpm: npm install -g pnpm"
+                exit 1
+            fi
+            
+            cd app
+            if pnpm install; then
+                print_success "React dependencies installed successfully"
+            else
+                print_error "Failed to install React dependencies"
+                cd ..
+                exit 1
+            fi
+            cd ..
+            ;;
+        "check-ports")
+            print_header "🔍 Check Port Conflicts"
+            print_info "Checking for port conflicts..."
+            
+            local ports=("8000:DynamoDB" "4566:LocalStack" "9324:SQS" "9239:Cognito" "3000:SAM API" "5173:React App")
+            local has_conflicts=false
+            
+            for port_info in "${ports[@]}"; do
+                IFS=':' read -r port service <<< "$port_info"
+                if lsof -ti :$port >/dev/null 2>&1; then
+                    has_conflicts=true
+                    local pids=$(lsof -ti :$port)
+                    local process_info=$(lsof -ti :$port | xargs ps -o pid,command -p 2>/dev/null || echo "Unknown process")
+                    
+                    print_warning "$service port $port is in use"
+                    print_info "Processes using port $port:"
+                    echo "$process_info" | while read line; do
+                        echo "  • $line"
+                    done
+                    echo ""
+                else
+                    print_success "$service port $port is available"
+                fi
+            done
+            
+            if [ "$has_conflicts" = "true" ]; then
+                echo ""
+                read -p "🚨 Kill all conflicting processes? (y/n): " -n 1 -r
+                echo ""
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    print_info "Killing all conflicting processes..."
+                    for port_info in "${ports[@]}"; do
+                        IFS=':' read -r port service <<< "$port_info"
+                        if lsof -ti :$port >/dev/null 2>&1; then
+                            local pids=$(lsof -ti :$port)
+                            print_info "Killing processes on port $port..."
+                            for pid in $pids; do
+                                if kill -0 "$pid" 2>/dev/null; then
+                                    kill "$pid" 2>/dev/null
+                                    sleep 1
+                                    if kill -0 "$pid" 2>/dev/null; then
+                                        kill -9 "$pid" 2>/dev/null
+                                    fi
+                                fi
+                            done
+                        fi
+                    done
+                    sleep 2
+                    print_success "All conflicting processes killed"
+                else
+                    print_info "No processes were killed"
+                fi
+            else
+                print_success "No port conflicts found"
+            fi
+            ;;
+        "generate-env")
+            print_header "📝 Generate Environment Configuration"
+            generate_env_local
+            ;;
+        "help"|"-h"|"--help")
+            cmd_help
+            ;;
+        *)
+            print_error "Unknown command: $command"
+            echo ""
+            cmd_help
+            exit 1
+            ;;
+    esac
+}
+
+# Run the main function with all arguments
+main "$@"

@@ -1,0 +1,67 @@
+/* Minimal CSS reset that won't conflict with Mantine */
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: 'Work Sans', ui-sans-serif, system-ui, sans-serif;  
+}
+
+#root {
+  height: 100%;
+}
+
+/* CSS Variables for theming */
+:root {
+  --background: #ffffff;
+  --foreground: #000000;
+  --muted: #6b7280;
+  --muted-foreground: #9ca3af;
+  --border: #e5e7eb;
+  --input: #e5e7eb;
+  --ring: #000000;
+  --primary: #000000;
+  --primary-foreground: #ffffff;
+  --secondary: #f3f4f6;
+  --secondary-foreground: #374151;
+  --accent: #f9fafb;
+  --accent-foreground: #374151;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --card: #ffffff;
+  --card-foreground: #000000;
+  --popover: #ffffff;
+  --popover-foreground: #000000;
+}
+
+.dark {
+  /* Subtle dark surface and higher contrast text */
+  --background: #0b0d12;           /* app background */
+  --foreground: #e5e7eb;           /* primary text */
+  --muted: #1b2230;                /* muted surfaces */
+  --muted-foreground: #9ca3af;     /* muted text */
+  --border: #2b3648;               /* clearer borders */
+  --input: #374151;                /* inputs */
+  --ring: #93c5fd;                 /* focus ring */
+  /* Primary accent for user bubbles/buttons */
+  --primary: #2563eb;              /* blue-600 */
+  --primary-foreground: #ffffff;   /* on-primary */
+  /* Elevated surfaces */
+  --secondary: #121826;            /* secondary panel */
+  --secondary-foreground: #e5e7eb;
+  --accent: #1a2232;               /* assistant bubble */
+  --accent-foreground: #e5e7eb;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --card: #111827;                 /* cards */
+  --card-foreground: #e5e7eb;
+  --popover: #111827;
+  --popover-foreground: #e5e7eb;
+}
+
+/* Invert logo color in dark mode */
+img.logo-invert { filter: none; }
+.dark img.logo-invert { filter: invert(1); }

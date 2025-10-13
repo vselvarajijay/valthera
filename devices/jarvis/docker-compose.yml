@@ -1,0 +1,64 @@
+version: "3.8"
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  jarvis-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: valthera/jarvis-api:local
+    restart: always
+    environment:
+      - JARVIS_HTTP_PORT=8001
+    ports:
+      - "8001:8001"
+    volumes:
+      - vehicle_tracker_data:/data/vehicle_tracker
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+      - /dev/video2:/dev/video2
+      - /dev/video3:/dev/video3
+      - /dev/video4:/dev/video4
+      - /dev/video5:/dev/video5
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 20s
+      timeout: 3s
+      retries: 5
+    logging: *default-logging
+    networks:
+      - jarvis-network
+
+  jarvis-streamlit:
+    build:
+      context: .
+      dockerfile: jarvis/streamlit_app/Dockerfile
+    image: valthera/jarvis-streamlit:local
+    restart: always
+    ports:
+      - "8501:8501"
+    depends_on:
+      - jarvis-api
+    volumes:
+      - vehicle_tracker_data:/data/vehicle_tracker
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+    networks:
+      - jarvis-network
+
+volumes:
+  vehicle_tracker_data:
+
+networks:
+  jarvis-network:
+    driver: bridge
