@@ -15,6 +15,8 @@ from .classifiers import router as classifiers_router
 from .frames import router as frames_router
 from .camera import router as camera_router
 from .vehicles import router as vehicles_router
+from .people import router as people_router
+from .tracking import router as tracking_router
 
 # Create main API v1 router
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -27,5 +29,7 @@ api_v1_router.include_router(classifiers_router, prefix="/classifiers", tags=["c
 api_v1_router.include_router(frames_router, prefix="/frames", tags=["frames"])
 api_v1_router.include_router(camera_router, prefix="/camera", tags=["camera"])
 api_v1_router.include_router(vehicles_router, tags=["vehicles"])
+api_v1_router.include_router(people_router, tags=["people"])
+api_v1_router.include_router(tracking_router, tags=["tracking"])
 
 __all__ = ['api_v1_router']

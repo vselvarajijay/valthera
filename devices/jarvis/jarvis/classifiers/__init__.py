@@ -8,7 +8,7 @@ face detection, and other computer vision tasks.
 """
 
 from .registry import BaseClassifier, ClassifierRegistry, SharedModelManager, ModelConfig, get_registry, cleanup_registry
-from .person_classifier import PersonClassifier, Detection
+from .person_classifier import PersonClassifier
 from .object_classifier import ObjectClassifier, COCO_CLASSES
 from .face_classifier import FaceClassifier
 
@@ -18,7 +18,6 @@ __all__ = [
     'SharedModelManager',
     'ModelConfig',
     'PersonClassifier',
-    'Detection',  # Legacy compatibility
     'ObjectClassifier',
     'COCO_CLASSES',
     'FaceClassifier',

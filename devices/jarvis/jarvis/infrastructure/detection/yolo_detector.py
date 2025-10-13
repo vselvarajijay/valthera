@@ -17,6 +17,7 @@ from ...domain.entities.frame import Frame
 from ...domain.entities.detection import Detection, BoundingBox, DetectionClass
 from ...domain.value_objects import Confidence, ProcessingTime
 from ...domain.exceptions import ModelLoadError, DetectionError
+from ...classifiers.person_classifier import PersonClassifier
 
 try:
     from ultralytics import YOLO
@@ -66,6 +67,7 @@ class YOLODetector(IDetectionService):
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
         self.model: Optional[YOLO] = None
+        self.person_classifier: Optional[PersonClassifier] = None
         self._is_initialized = False
         self._model_info: Dict[str, Any] = {}
         
@@ -129,7 +131,51 @@ class YOLODetector(IDetectionService):
             raise DetectionError("yolo", str(e))
     
     async def detect_persons(self, frame: Frame) -> List[Detection]:
-        """Detect persons in frame."""
+        """Detect persons in frame using person classifier with ReID."""
+        if not self._is_initialized:
+            raise DetectionError("detector", "Detector not initialized")
+        
+        # Use person classifier if available (with ReID and database storage)
+        if self.person_classifier:
+            try:
+                # Convert frame to numpy array for person classifier
+                image = self._frame_to_cv2(frame)
+                
+                # Use person classifier for detection with ReID
+                unified_detections = self.person_classifier.detect(image)
+                
+                # Convert UnifiedDetection to Detection objects
+                detections = []
+                for unified_detection in unified_detections:
+                    # Create bounding box
+                    x1, y1, x2, y2 = unified_detection.bbox
+                    bbox = BoundingBox(
+                        x1=int(x1), y1=int(y1),
+                        x2=int(x2), y2=int(y2)
+                    )
+                    
+                    # Create detection
+                    detection = Detection(
+                        class_name=unified_detection.class_name,
+                        class_id=unified_detection.class_id,
+                        confidence=Confidence(unified_detection.confidence),
+                        bounding_box=bbox,
+                        classifier_type=unified_detection.classifier_type,
+                        processing_time=ProcessingTime.from_milliseconds(unified_detection.processing_time_ms or 0),
+                        model_version=unified_detection.model_version
+                    )
+                    
+                    detections.append(detection)
+                
+                logger.debug(f"[YOLO_DETECTOR] Person classifier detected {len(detections)} persons")
+                return detections
+                
+            except Exception as e:
+                logger.error(f"[YOLO_DETECTOR] Person classifier detection failed: {e}")
+                # Fall back to basic detection
+                logger.info("[YOLO_DETECTOR] Falling back to basic person detection")
+        
+        # Fall back to basic YOLO detection if person classifier is not available
         return await self.detect_objects(frame, class_names=["person"])
     
     async def detect_vehicles(self, frame: Frame) -> List[Detection]:
@@ -164,7 +210,7 @@ class YOLODetector(IDetectionService):
         return self._model_info.copy()
     
     async def initialize(self) -> bool:
-        """Initialize the YOLO model."""
+        """Initialize the YOLO model and person classifier."""
         if not YOLO_AVAILABLE:
             raise ModelLoadError(self.model_path, "YOLO library not available")
         
@@ -174,13 +220,21 @@ class YOLODetector(IDetectionService):
             # Load model
             self.model = YOLO(self.model_path)
             
+            # Initialize person classifier for ReID functionality
+            logger.info("[YOLO_DETECTOR] Initializing person classifier with ReID")
+            self.person_classifier = PersonClassifier()
+            if not self.person_classifier.initialize():
+                logger.warning("[YOLO_DETECTOR] Failed to initialize person classifier, falling back to basic detection")
+                self.person_classifier = None
+            
             # Get model info
             self._model_info = {
                 "model_path": self.model_path,
                 "model_type": "yolo",
                 "version": "8.0",  # YOLOv8
                 "classes": len(self.COCO_CLASSES),
-                "confidence_threshold": self.confidence_threshold
+                "confidence_threshold": self.confidence_threshold,
+                "person_classifier_enabled": self.person_classifier is not None
             }
             
             self._is_initialized = True
@@ -195,6 +249,11 @@ class YOLODetector(IDetectionService):
     async def cleanup(self) -> None:
         """Cleanup detector resources."""
         try:
+            # Cleanup person classifier
+            if self.person_classifier:
+                self.person_classifier.cleanup()
+                self.person_classifier = None
+            
             self.model = None
             self._is_initialized = False
             logger.info("[YOLO_DETECTOR] Cleaned up")

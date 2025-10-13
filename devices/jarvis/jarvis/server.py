@@ -60,7 +60,9 @@ async def lifespan(app: FastAPI):
         logger.info("[SERVER] Dependency injection configured")
         
         # Initialize pipeline components
+        logger.info("[SERVER] About to call _initialize_pipeline()")
         await _initialize_pipeline()
+        logger.info("[SERVER] _initialize_pipeline() completed")
         
         logger.info("[SERVER] Jarvis pipeline started successfully")
         
@@ -78,9 +80,12 @@ async def lifespan(app: FastAPI):
 
 async def _initialize_pipeline():
     """Initialize pipeline components."""
+    logger.info("[SERVER] Starting pipeline initialization...")
     try:
         from jarvis.infrastructure.container import get_camera_service, get_detection_service
         from jarvis.tracking.vehicle_tracker import get_tracker
+        
+        logger.info("[SERVER] Getting services...")
         
         # Initialize camera service
         camera_service = await get_camera_service()
@@ -88,9 +93,17 @@ async def _initialize_pipeline():
             logger.warning("[SERVER] Camera service not available")
         
         # Initialize detection service
+        logger.info("[SERVER] Getting detection service...")
         detection_service = get_detection_service()
+        logger.info(f"[SERVER] Detection service type: {type(detection_service)}")
+        
         if not await detection_service.is_initialized():
-            logger.warning("[SERVER] Detection service not initialized")
+            logger.info("[SERVER] Initializing detection service...")
+            await detection_service.initialize()
+            if not await detection_service.is_initialized():
+                logger.warning("[SERVER] Detection service initialization failed")
+            else:
+                logger.info("[SERVER] Detection service initialized successfully")
         
         # Initialize vehicle tracker
         tracker = get_tracker()
@@ -101,6 +114,8 @@ async def _initialize_pipeline():
             
     except Exception as e:
         logger.error(f"[SERVER] Error initializing pipeline: {e}")
+        import traceback
+        logger.error(f"[SERVER] Traceback: {traceback.format_exc()}")
         raise
 
 

@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 
+"""
+Enhanced person classifier with Re-ID integration.
+
+This classifier extends BaseClassifier to detect people using YOLOv8,
+extract crops, generate ReID embeddings, and save video clips.
+"""
+
 import logging
 import time
+import collections
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 
@@ -10,44 +18,43 @@ try:
     CV2_AVAILABLE = True
 except ImportError:
     CV2_AVAILABLE = False
-    print("Warning: OpenCV not available")
-
-try:
-    from ultralytics import YOLO
-    YOLO_AVAILABLE = True
-except ImportError:
-    YOLO_AVAILABLE = False
-    print("Warning: YOLO not available")
 
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
-    print("Warning: NumPy not available")
+
+try:
+    from ultralytics import YOLO
+    YOLO_AVAILABLE = True
+except ImportError:
+    YOLO_AVAILABLE = False
 
 from ..classifiers.registry import BaseClassifier, ModelConfig
 from ..models.base import UnifiedDetection
+from ..reid.person_extractor import get_person_embedding
+from ..video.clip_manager import save_clip
+from ..db.unified_tracker_db import find_match, add_object, update_object, get_storage_dirs
 
 logger = logging.getLogger(__name__)
 
-@dataclass
-class Detection:
-    """Container for a single detection result (legacy compatibility)"""
-    bbox: List[int]  # [x1, y1, x2, y2]
-    confidence: float
-    class_id: int
-    class_name: str
+# Person class ID in COCO dataset
+PERSON_CLASS_ID = 0
+
+# Frame buffer for video clips (3 seconds at 30fps)
+FRAME_BUFFER_SIZE = 90
+
 
 class PersonClassifier(BaseClassifier):
-    """YOLO-based person detector with bounding box support"""
+    """YOLO-based person detector with ReID integration"""
     
     def __init__(self, 
                  name: str = "person",
                  config: Optional[ModelConfig] = None,
                  person_class_id: int = 0):
         """
-        Initialize the person classifier.
+        Initialize the person classifier with Re-ID capabilities.
         
         Args:
             name: Classifier name
@@ -66,6 +73,11 @@ class PersonClassifier(BaseClassifier):
         super().__init__(name, config)
         self.person_class_id = person_class_id
         self.stats.model_version = config.version or "8.0"
+        
+        # Frame buffer for video clips
+        self.frame_buffer = collections.deque(maxlen=FRAME_BUFFER_SIZE)
+        
+        logger.info(f"[CLASSIFIER] Person classifier with Re-ID initialized")
     
     def _load_model(self) -> Any:
         """Load the YOLO model"""
@@ -82,15 +94,20 @@ class PersonClassifier(BaseClassifier):
             logger.error(f"[CLASSIFIER] Error loading YOLO model: {e}")
             return None
     
+    def add_frame_to_buffer(self, frame: np.ndarray):
+        """Add frame to buffer for video clip generation"""
+        if NUMPY_AVAILABLE and frame is not None:
+            self.frame_buffer.append(frame.copy())
+    
     def detect(self, frame: np.ndarray) -> List[UnifiedDetection]:
         """
-        Detect people in the given frame.
+        Detect people in the given frame with Re-ID.
         
         Args:
             frame: Input image as numpy array (BGR format)
             
         Returns:
-            List of UnifiedDetection objects with bounding boxes
+            List of UnifiedDetection objects with bounding boxes and embeddings
         """
         if not self.is_initialized or not YOLO_AVAILABLE or not self.model:
             return []
@@ -101,6 +118,9 @@ class PersonClassifier(BaseClassifier):
         start_time = time.time()
         
         try:
+            # Add frame to buffer
+            self.add_frame_to_buffer(frame)
+            
             # Run YOLO inference
             results = self.model(frame, verbose=False)
             
@@ -118,6 +138,51 @@ class PersonClassifier(BaseClassifier):
                                 # Extract bounding box coordinates
                                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
                                 
+                                # Extract crop
+                                crop = frame[y1:y2, x1:x2]
+                                
+                                # Generate ReID embedding
+                                embedding = None
+                                try:
+                                    embedding = get_person_embedding(crop)
+                                except Exception as e:
+                                    logger.debug(f"[CLASSIFIER] ReID not available, continuing without embedding: {e}")
+                                    embedding = None
+                                
+                                # Get storage directories for people
+                                storage_dirs = get_storage_dirs('person')
+                                
+                                # Save thumbnail and clip
+                                timestamp = int(time.time() * 1000)  # milliseconds for uniqueness
+                                thumbnail_path = f"{storage_dirs['crops_dir']}/{timestamp}_{len(detections)}.jpg"
+                                clip_path = f"{storage_dirs['clips_dir']}/{timestamp}_{len(detections)}.mp4"
+                                
+                                # Save thumbnail
+                                cv2.imwrite(thumbnail_path, crop)
+                                
+                                # Save video clip from buffer
+                                if len(self.frame_buffer) > 0:
+                                    save_clip(list(self.frame_buffer), clip_path)
+                                
+                                # Try to match with existing people
+                                person_id = None
+                                if embedding is not None:
+                                    person_id = find_match(embedding, 'person', threshold=0.70)
+                                    
+                                    if person_id:
+                                        # Update existing person
+                                        update_object(person_id, 'person', thumbnail_path, clip_path)
+                                        logger.debug(f"[CLASSIFIER] Updated person {person_id}")
+                                    else:
+                                        # Add new person
+                                        person_id = add_object(embedding, 'person', thumbnail_path, clip_path)
+                                        logger.debug(f"[CLASSIFIER] Added new person {person_id}")
+                                else:
+                                    # No embedding available, create new person without matching
+                                    person_id = add_object(None, 'person', thumbnail_path, clip_path)
+                                    logger.debug(f"[CLASSIFIER] Added new person {person_id} without embedding")
+                                
+                                # Create detection object
                                 detection = UnifiedDetection(
                                     bbox=[int(x1), int(y1), int(x2), int(y2)],
                                     confidence=confidence,
@@ -126,7 +191,12 @@ class PersonClassifier(BaseClassifier):
                                     classifier_type=self.name,
                                     depth_mm=None,  # Will be filled by pipeline
                                     position_3d=None,  # Will be filled by pipeline
-                                    attributes=None,
+                                    attributes={
+                                        'embedding': embedding.tolist() if embedding is not None else None,
+                                        'person_id': person_id,
+                                        'thumbnail_path': thumbnail_path,
+                                        'clip_path': clip_path
+                                    },
                                     processing_time_ms=None,  # Will be calculated
                                     model_version=self.stats.model_version
                                 )
@@ -166,67 +236,32 @@ class PersonClassifier(BaseClassifier):
             for detection in detections:
                 x1, y1, x2, y2 = detection.bbox
                 
-                # Draw bounding box
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                # Get person ID from attributes
+                person_id = detection.attributes.get('person_id') if detection.attributes else None
                 
-                # Draw label with confidence
+                # Draw bounding box (different colors for new vs returning people)
+                color = (0, 255, 0) if person_id else (0, 0, 255)  # Green for returning, Red for new
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                
+                # Draw label with confidence and person ID
                 label = f"{detection.class_name}: {detection.confidence:.2f}"
+                if person_id:
+                    label += f" (ID: {person_id})"
+                else:
+                    label += " (NEW)"
+                
                 label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
                 
                 # Draw label background
                 cv2.rectangle(annotated_frame, 
                              (x1, y1 - label_size[1] - 10), 
                              (x1 + label_size[0], y1), 
-                             (0, 255, 0), -1)
+                             color, -1)
                 
                 # Draw label text
                 cv2.putText(annotated_frame, label, 
                            (x1, y1 - 5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-            
-            return annotated_frame
-            
-        except Exception as e:
-            logger.error(f"[CLASSIFIER] Error annotating frame: {e}")
-            return frame
-    
-    def annotate_frame_legacy(self, frame: np.ndarray, detections: List[Detection]) -> np.ndarray:
-        """
-        Draw bounding boxes and labels on the frame (legacy compatibility).
-        
-        Args:
-            frame: Input image as numpy array
-            detections: List of legacy Detection objects
-            
-        Returns:
-            Annotated frame with bounding boxes drawn
-        """
-        if not CV2_AVAILABLE or frame is None:
-            return frame
-        
-        annotated_frame = frame.copy()
-        
-        try:
-            for detection in detections:
-                x1, y1, x2, y2 = detection.bbox
-                
-                # Draw bounding box
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                
-                # Draw label with confidence
-                label = f"{detection.class_name}: {detection.confidence:.2f}"
-                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                
-                # Draw label background
-                cv2.rectangle(annotated_frame, 
-                             (x1, y1 - label_size[1] - 10), 
-                             (x1 + label_size[0], y1), 
-                             (0, 255, 0), -1)
-                
-                # Draw label text
-                cv2.putText(annotated_frame, label, 
-                           (x1, y1 - 5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             
             return annotated_frame
             
@@ -239,30 +274,14 @@ class PersonClassifier(BaseClassifier):
         self.config.confidence_threshold = max(0.0, min(1.0, threshold))
         logger.info(f"[CLASSIFIER] Confidence threshold set to {self.config.confidence_threshold}")
     
-    def detect_legacy(self, frame: np.ndarray) -> List[Detection]:
-        """
-        Detect people in the given frame (legacy compatibility).
-        
-        Args:
-            frame: Input image as numpy array (BGR format)
-            
-        Returns:
-            List of legacy Detection objects with bounding boxes
-        """
-        unified_detections = self.detect(frame)
-        
-        # Convert to legacy format
-        legacy_detections = []
-        for detection in unified_detections:
-            legacy_detection = Detection(
-                bbox=detection.bbox,
-                confidence=detection.confidence,
-                class_id=detection.class_id,
-                class_name=detection.class_name
-            )
-            legacy_detections.append(legacy_detection)
-        
-        return legacy_detections
+    def get_frame_buffer_size(self) -> int:
+        """Get current frame buffer size"""
+        return len(self.frame_buffer)
+    
+    def clear_frame_buffer(self):
+        """Clear the frame buffer"""
+        self.frame_buffer.clear()
+        logger.debug("[CLASSIFIER] Frame buffer cleared")
 
 
 def main():

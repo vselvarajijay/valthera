@@ -21,7 +21,7 @@ import threading
 
 # Configure page
 st.set_page_config(
-    page_title="🚗 Vehicle Tracker",
+    page_title="🚗👥 Object Tracker",
     page_icon="🚗",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -34,26 +34,45 @@ def main():
     """Main Streamlit application"""
     
     # Sidebar navigation
-    st.sidebar.title("🚗 Vehicle Tracker")
+    st.sidebar.title("🚗👥 Object Tracker")
+    
+    # Object type selection
+    st.sidebar.markdown("### 🎯 Object Type")
+    object_type = st.sidebar.radio(
+        "Track",
+        ["🚗 Vehicles", "👥 People"],
+        help="Select object type to track (only one active at a time)"
+    )
+    
+    # Extract object type and API endpoints
+    if object_type == "🚗 Vehicles":
+        object_name = "vehicles"
+        object_icon = "🚗"
+        api_prefix = "/vehicles"
+    else:
+        object_name = "people"
+        object_icon = "👥"
+        api_prefix = "/people"
     
     # Configuration debug
     st.sidebar.markdown("### ⚙️ Configuration")
     st.sidebar.code(f"API_BASE_URL: {API_BASE_URL}")
+    st.sidebar.code(f"Object Type: {object_name}")
     st.sidebar.code(f"Environment: Docker")
     
     page = st.sidebar.selectbox(
         "Navigate",
-        ["🏠 Dashboard", "🚗 Vehicle Gallery", "📊 Timeline", "🎥 Playback", "📹 Live View", "⚙️ Settings"]
+        ["🏠 Dashboard", f"{object_icon} Gallery", "📊 Timeline", "🎥 Playback", "📹 Live View", "⚙️ Settings"]
     )
     
     # API status check
     try:
-        response = requests.get(f"{API_BASE_URL}/vehicles/stats", timeout=5)
+        response = requests.get(f"{API_BASE_URL}{api_prefix}/stats", timeout=5)
         api_status = "🟢 Connected" if response.status_code == 200 else "🔴 Error"
         
         # Debug information
         st.sidebar.markdown("### 🔍 Debug Info")
-        st.sidebar.code(f"API URL: {API_BASE_URL}/vehicles/stats")
+        st.sidebar.code(f"API URL: {API_BASE_URL}{api_prefix}/stats")
         st.sidebar.code(f"Status Code: {response.status_code}")
         st.sidebar.code(f"Response: {response.text[:100]}...")
         
@@ -62,7 +81,7 @@ def main():
         
         # Debug information for connection errors
         st.sidebar.markdown("### 🔍 Debug Info")
-        st.sidebar.code(f"API URL: {API_BASE_URL}/vehicles/stats")
+        st.sidebar.code(f"API URL: {API_BASE_URL}{api_prefix}/stats")
         st.sidebar.code(f"Error: {str(e)}")
         st.sidebar.code(f"Error Type: {type(e).__name__}")
     
@@ -70,22 +89,22 @@ def main():
     
     # Route to appropriate page
     if page == "🏠 Dashboard":
-        show_dashboard()
-    elif page == "🚗 Vehicle Gallery":
-        show_gallery()
+        show_dashboard(object_name, object_icon, api_prefix)
+    elif page == f"{object_icon} Gallery":
+        show_gallery(object_name, object_icon, api_prefix)
     elif page == "📊 Timeline":
-        show_timeline()
+        show_timeline(object_name, object_icon, api_prefix)
     elif page == "🎥 Playback":
-        show_playback()
+        show_playback(object_name, object_icon, api_prefix)
     elif page == "📹 Live View":
         show_live_view()
     elif page == "⚙️ Settings":
-        show_settings()
+        show_settings(object_name, object_icon, api_prefix)
 
 
-def show_dashboard():
+def show_dashboard(object_name, object_icon, api_prefix):
     """Show main dashboard with statistics"""
-    st.title("🏠 Vehicle Tracking Dashboard")
+    st.title(f"{object_icon} {object_name.title()} Tracking Dashboard")
     
     # Debug section
     st.subheader("🔍 Debug Information")
@@ -93,14 +112,14 @@ def show_dashboard():
     
     with debug_col1:
         st.markdown("**API Request Details:**")
-        st.code(f"URL: {API_BASE_URL}/vehicles/stats")
+        st.code(f"URL: {API_BASE_URL}{api_prefix}/stats")
         st.code(f"Method: GET")
         st.code(f"Timeout: 5 seconds")
     
     try:
-        # Get vehicle statistics
+        # Get object statistics
         st.markdown("**Making API Request...**")
-        response = requests.get(f"{API_BASE_URL}/vehicles/stats", timeout=5)
+        response = requests.get(f"{API_BASE_URL}{api_prefix}/stats", timeout=5)
         
         with debug_col2:
             st.markdown("**API Response Details:**")
@@ -115,14 +134,21 @@ def show_dashboard():
             # Display key metrics
             col1, col2, col3, col4 = st.columns(4)
             
+            # Map object names to correct field names
+            field_mapping = {
+                'vehicles': 'vehicles',
+                'people': 'persons'
+            }
+            field_name = field_mapping[object_name]
+            
             with col1:
-                st.metric("Total Vehicles", stats['total_vehicles'])
+                st.metric(f"Total {object_name.title()}", stats[f'total_{field_name}'])
             
             with col2:
-                st.metric("Returning Vehicles", stats['returning_vehicles'])
+                st.metric(f"Returning {object_name.title()}", stats[f'returning_{field_name}'])
             
             with col3:
-                st.metric("Recent (24h)", stats['recent_vehicles'])
+                st.metric("Recent (24h)", stats[f'recent_{field_name}'])
             
             with col4:
                 st.metric("Return Rate", f"{stats['return_rate']:.1f}%")
@@ -132,15 +158,27 @@ def show_dashboard():
             col1, col2 = st.columns(2)
             
             with col1:
-                st.metric("Avg Sightings/Vehicle", f"{stats['avg_sightings_per_vehicle']:.1f}")
+                # Map to singular for avg_sightings field
+                singular_mapping = {
+                    'vehicles': 'vehicle',
+                    'people': 'person'
+                }
+                singular_name = singular_mapping[object_name]
+                st.metric(f"Avg Sightings/{object_name.title()}", f"{stats[f'avg_sightings_per_{singular_name}']:.1f}")
             
             with col2:
                 # Get tracking status
                 try:
-                    status_response = requests.get(f"{API_BASE_URL}/vehicles/tracking/status")
+                    status_response = requests.get(f"{API_BASE_URL}/tracking/status")
                     if status_response.status_code == 200:
                         tracking_status = status_response.json()
-                        status_text = "🟢 Running" if tracking_status['is_running'] else "🔴 Stopped"
+                        current_mode = tracking_status.get('current_mode', 'stopped')
+                        is_running = tracking_status.get('is_running', False)
+                        
+                        if is_running:
+                            status_text = f"🟢 Running ({current_mode.title()})"
+                        else:
+                            status_text = "🔴 Stopped"
                         st.metric("Tracking Status", status_text)
                 except:
                     st.metric("Tracking Status", "❓ Unknown")
@@ -148,21 +186,21 @@ def show_dashboard():
             # Recent activity
             st.subheader("🕒 Recent Activity")
             try:
-                vehicles_response = requests.get(f"{API_BASE_URL}/vehicles/")
-                if vehicles_response.status_code == 200:
-                    vehicles = vehicles_response.json()
+                objects_response = requests.get(f"{API_BASE_URL}{api_prefix}/")
+                if objects_response.status_code == 200:
+                    objects = objects_response.json()
                     
-                    # Show recent vehicles
-                    recent_vehicles = sorted(vehicles, key=lambda x: x['last_seen'], reverse=True)[:5]
+                    # Show recent objects
+                    recent_objects = sorted(objects, key=lambda x: x['last_seen'], reverse=True)[:5]
                     
-                    for vehicle in recent_vehicles:
+                    for obj in recent_objects:
                         col1, col2, col3 = st.columns([1, 2, 1])
                         with col1:
-                            st.write(f"**Vehicle #{vehicle['vehicle_id']}**")
+                            st.write(f"**{object_name.title()} #{obj['object_id']}**")
                         with col2:
-                            st.write(f"Last seen: {vehicle['last_seen']}")
+                            st.write(f"Last seen: {obj['last_seen']}")
                         with col3:
-                            st.write(f"Seen {vehicle['count']} times")
+                            st.write(f"Seen {obj['count']} times")
                         
                         st.divider()
             
@@ -170,7 +208,7 @@ def show_dashboard():
                 st.error(f"Error loading recent activity: {e}")
         
         else:
-            st.error("Failed to load vehicle statistics")
+            st.error(f"Failed to load {object_name} statistics")
             st.markdown("**Error Details:**")
             st.code(f"Status Code: {response.status_code}")
             st.code(f"Response: {response.text}")
@@ -181,7 +219,7 @@ def show_dashboard():
         st.markdown("**Exception Details:**")
         st.code(f"Exception Type: {type(e).__name__}")
         st.code(f"Exception Message: {str(e)}")
-        st.code(f"Request URL: {API_BASE_URL}/vehicles/stats")
+        st.code(f"Request URL: {API_BASE_URL}{api_prefix}/stats")
         
         # Additional debugging for common issues
         if "ConnectionError" in str(type(e)):
@@ -192,29 +230,29 @@ def show_dashboard():
             st.warning("🌐 **HTTP Error**: The API server returned an error status")
 
 
-def show_gallery():
-    """Show vehicle gallery with thumbnails"""
-    st.title("🚗 Vehicle Gallery")
+def show_gallery(object_name, object_icon, api_prefix):
+    """Show object gallery with thumbnails"""
+    st.title(f"{object_icon} {object_name.title()} Gallery")
     
     try:
-        # Get all vehicles
-        response = requests.get(f"{API_BASE_URL}/vehicles/")
+        # Get all objects
+        response = requests.get(f"{API_BASE_URL}{api_prefix}/")
         if response.status_code == 200:
-            vehicles = response.json()
+            objects = response.json()
             
-            if not vehicles:
-                st.info("No vehicles detected yet. Start tracking to see vehicles here!")
+            if not objects:
+                st.info(f"No {object_name} detected yet. Start tracking to see {object_name} here!")
                 return
             
-            # Display vehicles in grid
+            # Display objects in grid
             cols = st.columns(4)
             
-            for i, vehicle in enumerate(vehicles):
+            for i, obj in enumerate(objects):
                 with cols[i % 4]:
                     # Display thumbnail if available
-                    if vehicle['thumbnail_paths']:
+                    if obj['thumbnail_paths']:
                         try:
-                            thumbnail_path = vehicle['thumbnail_paths'][0]
+                            thumbnail_path = obj['thumbnail_paths'][0]
                             if os.path.exists(thumbnail_path):
                                 st.image(thumbnail_path, width=200)
                             else:
@@ -224,41 +262,41 @@ def show_gallery():
                     else:
                         st.image("https://via.placeholder.com/200x150/cccccc/666666?text=No+Image", width=200)
                     
-                    st.markdown(f"**Vehicle #{vehicle['vehicle_id']}**")
-                    st.caption(f"Seen {vehicle['count']} times")
-                    st.caption(f"Last seen: {vehicle['last_seen']}")
+                    st.markdown(f"**{object_name.title()} #{obj['object_id']}**")
+                    st.caption(f"Seen {obj['count']} times")
+                    st.caption(f"Last seen: {obj['last_seen']}")
                     
                     # Button to view timeline
-                    if st.button(f"View Timeline", key=f"timeline_{vehicle['vehicle_id']}"):
-                        st.session_state['selected_vehicle'] = vehicle['vehicle_id']
+                    if st.button(f"View Timeline", key=f"timeline_{obj['object_id']}"):
+                        st.session_state[f'selected_{object_name}'] = obj['object_id']
                         st.rerun()
             
-            # Show selected vehicle info
-            if 'selected_vehicle' in st.session_state:
-                st.subheader(f"Selected Vehicle #{st.session_state['selected_vehicle']}")
+            # Show selected object info
+            if f'selected_{object_name}' in st.session_state:
+                st.subheader(f"Selected {object_name.title()} #{st.session_state[f'selected_{object_name}']}")
                 
-                # Get detailed vehicle info
+                # Get detailed object info
                 try:
-                    vehicle_response = requests.get(f"{API_BASE_URL}/vehicles/{st.session_state['selected_vehicle']}")
-                    if vehicle_response.status_code == 200:
-                        vehicle = vehicle_response.json()
+                    obj_response = requests.get(f"{API_BASE_URL}{api_prefix}/{st.session_state[f'selected_{object_name}']}")
+                    if obj_response.status_code == 200:
+                        obj = obj_response.json()
                         
                         col1, col2 = st.columns(2)
                         
                         with col1:
-                            st.write(f"**First Seen:** {vehicle['first_seen']}")
-                            st.write(f"**Last Seen:** {vehicle['last_seen']}")
-                            st.write(f"**Total Sightings:** {vehicle['count']}")
+                            st.write(f"**First Seen:** {obj['first_seen']}")
+                            st.write(f"**Last Seen:** {obj['last_seen']}")
+                            st.write(f"**Total Sightings:** {obj['count']}")
                         
                         with col2:
-                            st.write(f"**Thumbnails:** {len(vehicle['thumbnail_paths'])}")
-                            st.write(f"**Video Clips:** {len(vehicle['clip_paths'])}")
+                            st.write(f"**Thumbnails:** {len(obj['thumbnail_paths'])}")
+                            st.write(f"**Video Clips:** {len(obj['clip_paths'])}")
                         
                         # Show all thumbnails
-                        if vehicle['thumbnail_paths']:
+                        if obj['thumbnail_paths']:
                             st.subheader("📸 All Sightings")
                             thumbnail_cols = st.columns(4)
-                            for i, thumb_path in enumerate(vehicle['thumbnail_paths']):
+                            for i, thumb_path in enumerate(obj['thumbnail_paths']):
                                 with thumbnail_cols[i % 4]:
                                     if os.path.exists(thumb_path):
                                         st.image(thumb_path, width=150)
@@ -266,48 +304,48 @@ def show_gallery():
                                         st.image("https://via.placeholder.com/150x100/cccccc/666666?text=Missing", width=150)
                 
                 except Exception as e:
-                    st.error(f"Error loading vehicle details: {e}")
+                    st.error(f"Error loading {object_name} details: {e}")
         
         else:
-            st.error("Failed to load vehicles")
+            st.error(f"Failed to load {object_name}")
     
     except Exception as e:
         st.error(f"Error connecting to API: {e}")
 
 
-def show_timeline():
-    """Show timeline for selected vehicle"""
-    st.title("📊 Vehicle Timeline")
+def show_timeline(object_name, object_icon, api_prefix):
+    """Show timeline for selected object"""
+    st.title(f"📊 {object_name.title()} Timeline")
     
-    if 'selected_vehicle' not in st.session_state:
-        st.info("Please select a vehicle from the Gallery to view its timeline.")
+    if f'selected_{object_name}' not in st.session_state:
+        st.info(f"Please select a {object_name[:-1]} from the Gallery to view its timeline.")
         return
     
-    vehicle_id = st.session_state['selected_vehicle']
+    object_id = st.session_state[f'selected_{object_name}']
     
     try:
-        # Get vehicle timeline
-        response = requests.get(f"{API_BASE_URL}/vehicles/{vehicle_id}")
+        # Get object timeline
+        response = requests.get(f"{API_BASE_URL}{api_prefix}/{object_id}")
         if response.status_code == 200:
-            vehicle = response.json()
+            obj = response.json()
             
-            st.subheader(f"Vehicle #{vehicle_id} Timeline")
+            st.subheader(f"{object_name.title()} #{object_id} Timeline")
             
-            # Vehicle summary
+            # Object summary
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Total Sightings", vehicle['count'])
+                st.metric("Total Sightings", obj['count'])
             with col2:
-                st.metric("First Seen", vehicle['first_seen'][:10])
+                st.metric("First Seen", obj['first_seen'][:10])
             with col3:
-                st.metric("Last Seen", vehicle['last_seen'][:10])
+                st.metric("Last Seen", obj['last_seen'][:10])
             
             # Timeline visualization
             st.subheader("📅 Detection Timeline")
             
             # Show sightings chronologically
             sightings = []
-            for i, (thumb_path, clip_path) in enumerate(zip(vehicle['thumbnail_paths'], vehicle['clip_paths'])):
+            for i, (thumb_path, clip_path) in enumerate(zip(obj['thumbnail_paths'], obj['clip_paths'])):
                 sightings.append({
                     'index': i + 1,
                     'thumbnail': thumb_path,
@@ -337,33 +375,33 @@ def show_timeline():
                 st.divider()
         
         else:
-            st.error("Failed to load vehicle timeline")
+            st.error(f"Failed to load {object_name} timeline")
     
     except Exception as e:
         st.error(f"Error loading timeline: {e}")
 
 
-def show_playback():
+def show_playback(object_name, object_icon, api_prefix):
     """Show video playback interface"""
     st.title("🎥 Video Playback")
     
-    if 'selected_vehicle' not in st.session_state:
-        st.info("Please select a vehicle from the Gallery to view its videos.")
+    if f'selected_{object_name}' not in st.session_state:
+        st.info(f"Please select a {object_name[:-1]} from the Gallery to view its videos.")
         return
     
-    vehicle_id = st.session_state['selected_vehicle']
+    object_id = st.session_state[f'selected_{object_name}']
     
     try:
-        # Get vehicle clips
-        response = requests.get(f"{API_BASE_URL}/vehicles/{vehicle_id}/clips")
+        # Get object clips
+        response = requests.get(f"{API_BASE_URL}{api_prefix}/{object_id}/clips")
         if response.status_code == 200:
             clips_data = response.json()
             
-            st.subheader(f"Vehicle #{vehicle_id} Video Clips")
+            st.subheader(f"{object_name.title()} #{object_id} Video Clips")
             
             clips = clips_data['clips']
             if not clips:
-                st.info("No video clips available for this vehicle.")
+                st.info(f"No video clips available for this {object_name[:-1]}.")
                 return
             
             # Individual clips
@@ -385,7 +423,7 @@ def show_playback():
             with col1:
                 output_filename = st.text_input(
                     "Output filename",
-                    value=f"vehicle_{vehicle_id}_merged.mp4",
+                    value=f"{object_name[:-1]}_{object_id}_merged.mp4",
                     help="Name for the merged video file"
                 )
             
@@ -394,7 +432,7 @@ def show_playback():
                     with st.spinner("Merging clips..."):
                         try:
                             merge_response = requests.post(
-                                f"{API_BASE_URL}/vehicles/{vehicle_id}/merge",
+                                f"{API_BASE_URL}{api_prefix}/{object_id}/merge",
                                 json={"output_filename": output_filename}
                             )
                             
@@ -416,57 +454,140 @@ def show_playback():
                             st.error(f"Error merging clips: {e}")
         
         else:
-            st.error("Failed to load vehicle clips")
+            st.error(f"Failed to load {object_name} clips")
     
     except Exception as e:
         st.error(f"Error loading playback: {e}")
 
 
-def show_settings():
+def show_settings(object_name, object_icon, api_prefix):
     """Show tracking settings and configuration"""
     st.title("⚙️ Settings")
     
     try:
         # Get current tracking status and config
-        status_response = requests.get(f"{API_BASE_URL}/vehicles/tracking/status")
-        config_response = requests.get(f"{API_BASE_URL}/vehicles/tracking/config")
+        status_response = requests.get(f"{API_BASE_URL}{api_prefix}/tracking/status")
+        config_response = requests.get(f"{API_BASE_URL}{api_prefix}/tracking/config")
         
         if status_response.status_code == 200 and config_response.status_code == 200:
             status = status_response.json()
             config = config_response.json()
             
-            # Tracking control
+            # Unified tracking control
             st.subheader("🎮 Tracking Control")
             
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if status['is_running']:
-                    if st.button("⏹️ Stop Tracking", type="secondary"):
-                        try:
-                            stop_response = requests.post(f"{API_BASE_URL}/vehicles/tracking/stop")
-                            if stop_response.status_code == 200:
-                                st.success("Tracking stopped")
-                                st.rerun()
-                            else:
-                                st.error("Failed to stop tracking")
-                        except Exception as e:
-                            st.error(f"Error stopping tracking: {e}")
+            # Get unified tracking status
+            try:
+                unified_status_response = requests.get(f"{API_BASE_URL}/tracking/status")
+                if unified_status_response.status_code == 200:
+                    unified_status = unified_status_response.json()
+                    current_mode = unified_status.get('current_mode', 'stopped')
+                    is_running = unified_status.get('is_running', False)
+                    
+                    # Display current status with debugging
+                    col1, col2, col3 = st.columns([2, 1, 1])
+                    
+                    with col1:
+                        if is_running:
+                            status_text = f"🟢 Running ({current_mode.title()})"
+                        else:
+                            status_text = "🔴 Stopped"
+                        st.metric("Current Status", status_text)
+                    
+                    with col2:
+                        if st.button("⏹️ Stop", type="secondary"):
+                            try:
+                                stop_response = requests.post(f"{API_BASE_URL}/tracking/stop")
+                                if stop_response.status_code == 200:
+                                    st.success("Tracking stopped")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Failed to stop tracking: {stop_response.status_code}")
+                                    st.code(f"Response: {stop_response.text}")
+                            except Exception as e:
+                                st.error(f"Error stopping tracking: {e}")
+                    
+                    with col3:
+                        if st.button("▶️ Start", type="primary"):
+                            try:
+                                # Start tracking for the current object type
+                                start_response = requests.post(
+                                    f"{API_BASE_URL}/tracking/start",
+                                    json={"object_type": object_name}
+                                )
+                                if start_response.status_code == 200:
+                                    st.success(f"Tracking started for {object_name}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Failed to start tracking: {start_response.status_code}")
+                                    st.code(f"Response: {start_response.text}")
+                            except Exception as e:
+                                st.error(f"Error starting tracking: {e}")
+                    
+                    # Mode switching controls
+                    st.subheader("🔄 Switch Tracking Mode")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        if st.button("🚗 Switch to Vehicles", disabled=(current_mode == 'vehicles')):
+                            try:
+                                switch_response = requests.post(
+                                    f"{API_BASE_URL}/tracking/switch",
+                                    json={"object_type": "vehicles"}
+                                )
+                                if switch_response.status_code == 200:
+                                    st.success("Switched to vehicle tracking")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Failed to switch: {switch_response.status_code}")
+                                    st.code(f"Response: {switch_response.text}")
+                            except Exception as e:
+                                st.error(f"Error switching to vehicles: {e}")
+                    
+                    with col2:
+                        if st.button("👥 Switch to People", disabled=(current_mode == 'people')):
+                            try:
+                                switch_response = requests.post(
+                                    f"{API_BASE_URL}/tracking/switch",
+                                    json={"object_type": "people"}
+                                )
+                                if switch_response.status_code == 200:
+                                    st.success("Switched to people tracking")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Failed to switch: {switch_response.status_code}")
+                                    st.code(f"Response: {switch_response.text}")
+                            except Exception as e:
+                                st.error(f"Error switching to people: {e}")
+                    
+                    # Debug information
+                    with st.expander("🔍 Debug Information"):
+                        st.json(unified_status)
+                        
+                        # Test API endpoints
+                        st.subheader("API Endpoint Tests")
+                        
+                        test_endpoints = [
+                            ("Unified Status", f"{API_BASE_URL}/tracking/status"),
+                            ("People Stats", f"{API_BASE_URL}/people/stats"),
+                            ("Vehicles Stats", f"{API_BASE_URL}/vehicles/stats"),
+                        ]
+                        
+                        for name, url in test_endpoints:
+                            try:
+                                response = requests.get(url, timeout=5)
+                                st.write(f"**{name}**: {response.status_code} ✅")
+                                if response.status_code != 200:
+                                    st.code(f"Error: {response.text}")
+                            except Exception as e:
+                                st.write(f"**{name}**: ❌ {e}")
+                
                 else:
-                    if st.button("▶️ Start Tracking", type="primary"):
-                        try:
-                            start_response = requests.post(f"{API_BASE_URL}/vehicles/tracking/start")
-                            if start_response.status_code == 200:
-                                st.success("Tracking started")
-                                st.rerun()
-                            else:
-                                st.error("Failed to start tracking")
-                        except Exception as e:
-                            st.error(f"Error starting tracking: {e}")
-            
-            with col2:
-                status_text = "🟢 Running" if status['is_running'] else "🔴 Stopped"
-                st.metric("Current Status", status_text)
+                    st.error(f"Failed to get unified tracking status: {unified_status_response.status_code}")
+                    st.code(f"Response: {unified_status_response.text}")
+                    
+            except Exception as e:
+                st.error(f"Error getting unified tracking status: {e}")
             
             # Configuration
             st.subheader("⚙️ Tracking Configuration")
@@ -490,7 +611,7 @@ def show_settings():
                         max_value=1.0,
                         value=float(config['similarity_threshold']),
                         step=0.05,
-                        help="Threshold for matching vehicles"
+                        help="Threshold for matching objects"
                     )
                 
                 with col2:
@@ -520,7 +641,7 @@ def show_settings():
                         }
                         
                         update_response = requests.post(
-                            f"{API_BASE_URL}/vehicles/tracking/config",
+                            f"{API_BASE_URL}{api_prefix}/tracking/config",
                             json=update_data
                         )
                         
@@ -536,14 +657,8 @@ def show_settings():
             # Storage management
             st.subheader("💾 Storage Management")
             
-            # Debug storage stats request
-            st.markdown("**Storage Stats Debug:**")
-            st.code(f"URL: {API_BASE_URL}/vehicles/storage/stats")
-            
             try:
-                storage_response = requests.get(f"{API_BASE_URL}/vehicles/storage/stats")
-                st.code(f"Status Code: {storage_response.status_code}")
-                st.code(f"Response: {storage_response.text}")
+                storage_response = requests.get(f"{API_BASE_URL}{api_prefix}/storage/stats")
                 
                 if storage_response.status_code == 200:
                     storage_stats = storage_response.json()
@@ -578,7 +693,7 @@ def show_settings():
                         with st.spinner("Running cleanup..."):
                             try:
                                 cleanup_response = requests.post(
-                                    f"{API_BASE_URL}/vehicles/storage/cleanup",
+                                    f"{API_BASE_URL}{api_prefix}/storage/cleanup",
                                     params={
                                         "days_old": cleanup_days,
                                         "dry_run": dry_run
@@ -609,7 +724,7 @@ def show_settings():
 
 
 def show_live_view():
-    """Show live camera feed using HTTP polling"""
+    """Show live camera feed with tracking overlays"""
     st.title("📹 Live Camera View")
     
     # Initialize session state
@@ -618,19 +733,36 @@ def show_live_view():
     if 'last_frame_time' not in st.session_state:
         st.session_state.last_frame_time = 0
     
-    # Connection status
-    col1, col2 = st.columns([2, 1])
+    # Get current tracking status
+    tracking_status = None
+    try:
+        tracking_response = requests.get(f"{API_BASE_URL}/tracking/status", timeout=2)
+        if tracking_response.status_code == 200:
+            tracking_status = tracking_response.json()
+    except:
+        pass
+    
+    # Connection status and tracking info
+    col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
-        # Try to fetch frame
+        # Try to fetch annotated frame first (with bounding boxes)
+        annotated_available = False
         try:
-            response = requests.get(f"{API_BASE_URL}/camera/raw", timeout=2)
+            response = requests.get(f"{API_BASE_URL}/live/annotated", timeout=2)
             if response.status_code == 200:
-                st.success("🟢 Camera Connected")
+                st.success("🟢 Camera Connected (Annotated)")
+                annotated_available = True
                 camera_connected = True
             else:
-                st.error("🔴 Camera Disconnected")
-                camera_connected = False
+                # Fall back to raw frame
+                response = requests.get(f"{API_BASE_URL}/live/raw", timeout=2)
+                if response.status_code == 200:
+                    st.success("🟢 Camera Connected (Raw)")
+                    camera_connected = True
+                else:
+                    st.error("🔴 Camera Disconnected")
+                    camera_connected = False
         except:
             st.error("🔴 Camera Disconnected")
             camera_connected = False
@@ -639,18 +771,32 @@ def show_live_view():
         if st.button("🔄 Refresh"):
             st.rerun()
     
+    with col3:
+        if tracking_status:
+            current_mode = tracking_status.get('current_mode', 'stopped')
+            is_running = tracking_status.get('is_running', False)
+            if is_running:
+                st.info(f"🎯 Tracking: {current_mode.title()}")
+            else:
+                st.warning("⏹️ Tracking: Stopped")
+    
     # Display live feed
     st.subheader("📷 Live Camera Feed")
     
     if camera_connected:
         try:
-            # Fetch frame
-            response = requests.get(f"{API_BASE_URL}/camera/raw", timeout=2)
+            # Try annotated frame first, fall back to raw
+            if annotated_available:
+                response = requests.get(f"{API_BASE_URL}/live/annotated", timeout=2)
+                frame_type = "Annotated (with bounding boxes)"
+            else:
+                response = requests.get(f"{API_BASE_URL}/live/raw", timeout=2)
+                frame_type = "Raw (no bounding boxes)"
             
             if response.status_code == 200:
                 # Display frame
                 image = Image.open(io.BytesIO(response.content))
-                st.image(image, width='stretch')
+                st.image(image, width='stretch', caption=f"📸 {frame_type}")
                 
                 # Update metrics
                 st.session_state.frame_count += 1
@@ -673,6 +819,32 @@ def show_live_view():
                     st.metric("Status", "🟢 Live")
                 
                 st.session_state.last_frame_time = current_time
+                
+                # Debug information
+                with st.expander("🔍 Debug Information"):
+                    st.subheader("Tracking Status")
+                    if tracking_status:
+                        st.json(tracking_status)
+                    else:
+                        st.warning("No tracking status available")
+                    
+                    st.subheader("API Endpoint Tests")
+                    test_endpoints = [
+                        ("Annotated Frame", f"{API_BASE_URL}/live/annotated"),
+                        ("Raw Frame", f"{API_BASE_URL}/live/raw"),
+                        ("Live View Status", f"{API_BASE_URL}/live/status"),
+                        ("Tracking Status", f"{API_BASE_URL}/tracking/status"),
+                        ("Pipeline Status", f"{API_BASE_URL}/pipeline/status"),
+                    ]
+                    
+                    for name, url in test_endpoints:
+                        try:
+                            response = requests.get(url, timeout=2)
+                            st.write(f"**{name}**: {response.status_code} ✅")
+                            if response.status_code != 200:
+                                st.code(f"Error: {response.text}")
+                        except Exception as e:
+                            st.write(f"**{name}**: ❌ {e}")
                 
                 # Auto-refresh for smooth video
                 time.sleep(0.1)

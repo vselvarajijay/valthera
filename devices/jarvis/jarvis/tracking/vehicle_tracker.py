@@ -123,11 +123,11 @@ class VehicleTracker:
             self.is_running = False
             return False
     
-    def stop_tracking(self):
+    def stop_tracking(self) -> bool:
         """Stop the vehicle tracking loop"""
         if not self.is_running:
             logger.warning("[TRACKER] Tracking not running")
-            return
+            return True
         
         try:
             self._stop_event.set()
@@ -137,9 +137,11 @@ class VehicleTracker:
                 self._tracking_thread.join(timeout=5.0)
             
             logger.info("[TRACKER] Vehicle tracking stopped")
+            return True
             
         except Exception as e:
             logger.error(f"[TRACKER] Error stopping tracking: {e}")
+            return False
     
     def _tracking_loop(self):
         """Main tracking loop (runs in separate thread)"""

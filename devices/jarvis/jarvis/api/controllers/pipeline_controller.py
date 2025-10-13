@@ -14,14 +14,17 @@ from jarvis.infrastructure.container import (
     camera_service_dependency,
     detection_service_dependency,
     depth_service_dependency,
+    frame_repository_dependency,
+    detection_repository_dependency,
     metrics_repository_dependency,
+    cache_repository_dependency,
     settings_dependency
 )
 from jarvis.infrastructure.config.settings import Settings
 from jarvis.domain.services.camera_service import ICameraService
 from jarvis.domain.services.detection_service import IDetectionService
 from jarvis.domain.services.depth_service import IDepthService
-from jarvis.domain.repositories.frame_repository import IMetricsRepository
+from jarvis.domain.repositories.frame_repository import IMetricsRepository, IFrameRepository, IDetectionRepository, ICacheRepository
 from jarvis.application.use_cases.start_pipeline import StartPipelineUseCase, StopPipelineUseCase, StartPipelineRequest, StartPipelineResponse, StopPipelineRequest, StopPipelineResponse
 from jarvis.application.use_cases.get_system_status import GetSystemStatusUseCase, SystemStatusResponse
 
@@ -112,7 +115,10 @@ class PipelineController:
             camera_service: ICameraService = Depends(camera_service_dependency),
             detection_service: IDetectionService = Depends(detection_service_dependency),
             depth_service: IDepthService = Depends(depth_service_dependency),
-            metrics_repository: IMetricsRepository = Depends(metrics_repository_dependency)
+            frame_repository: IFrameRepository = Depends(frame_repository_dependency),
+            detection_repository: IDetectionRepository = Depends(detection_repository_dependency),
+            metrics_repository: IMetricsRepository = Depends(metrics_repository_dependency),
+            cache_repository: ICacheRepository = Depends(cache_repository_dependency)
         ):
             """Get pipeline status."""
             try:
@@ -120,7 +126,10 @@ class PipelineController:
                     camera_service,
                     detection_service,
                     depth_service,
-                    metrics_repository
+                    frame_repository,
+                    detection_repository,
+                    metrics_repository,
+                    cache_repository
                 )
                 
                 response = await use_case.execute()
@@ -145,7 +154,10 @@ class PipelineController:
             camera_service: ICameraService = Depends(camera_service_dependency),
             detection_service: IDetectionService = Depends(detection_service_dependency),
             depth_service: IDepthService = Depends(depth_service_dependency),
-            metrics_repository: IMetricsRepository = Depends(metrics_repository_dependency)
+            frame_repository: IFrameRepository = Depends(frame_repository_dependency),
+            detection_repository: IDetectionRepository = Depends(detection_repository_dependency),
+            metrics_repository: IMetricsRepository = Depends(metrics_repository_dependency),
+            cache_repository: ICacheRepository = Depends(cache_repository_dependency)
         ):
             """Get health summary."""
             try:
@@ -153,7 +165,10 @@ class PipelineController:
                     camera_service,
                     detection_service,
                     depth_service,
-                    metrics_repository
+                    frame_repository,
+                    detection_repository,
+                    metrics_repository,
+                    cache_repository
                 )
                 
                 health_summary = await use_case.get_health_summary()

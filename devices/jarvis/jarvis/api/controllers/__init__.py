@@ -34,6 +34,11 @@ from jarvis.api.controllers.camera_controller import CameraController
 from jarvis.api.controllers.health_controller import HealthController
 from jarvis.api.controllers.vehicle_controller import VehicleController
 
+# Import the new people and tracking routers
+from jarvis.api.v1.people import router as people_router
+from jarvis.api.v1.tracking import router as tracking_router
+from jarvis.api.v1.live_view import router as live_view_router
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,5 +61,10 @@ def create_api_router() -> APIRouter:
     router.include_router(camera_controller.router, prefix="/camera", tags=["camera"])
     router.include_router(health_controller.router, prefix="/health", tags=["health"])
     router.include_router(vehicle_controller.router, prefix="/vehicles", tags=["vehicles"])
+    
+    # Include the new people and tracking routers
+    router.include_router(people_router, tags=["people"])
+    router.include_router(tracking_router, tags=["tracking"])
+    router.include_router(live_view_router, prefix="/live", tags=["live_view"])
     
     return router
