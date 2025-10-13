@@ -341,7 +341,7 @@ def get_vehicle_stats() -> Dict[str, Any]:
         # Recent activity (last 24 hours)
         recent_result = conn.execute("""
             SELECT COUNT(*) FROM vehicles 
-            WHERE last_seen >= datetime('now', '-1 day')
+            WHERE last_seen >= current_timestamp - interval '1 day'
         """).fetchone()
         recent_vehicles = recent_result[0] if recent_result else 0
         

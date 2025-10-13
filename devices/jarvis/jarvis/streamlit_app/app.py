@@ -28,13 +28,18 @@ st.set_page_config(
 )
 
 # API configuration
-API_BASE_URL = "http://jarvis-api:8001"
+API_BASE_URL = "http://jarvis-api:8001/api/v1"
 
 def main():
     """Main Streamlit application"""
     
     # Sidebar navigation
     st.sidebar.title("🚗 Vehicle Tracker")
+    
+    # Configuration debug
+    st.sidebar.markdown("### ⚙️ Configuration")
+    st.sidebar.code(f"API_BASE_URL: {API_BASE_URL}")
+    st.sidebar.code(f"Environment: Docker")
     
     page = st.sidebar.selectbox(
         "Navigate",
@@ -45,8 +50,21 @@ def main():
     try:
         response = requests.get(f"{API_BASE_URL}/vehicles/stats", timeout=5)
         api_status = "🟢 Connected" if response.status_code == 200 else "🔴 Error"
-    except:
+        
+        # Debug information
+        st.sidebar.markdown("### 🔍 Debug Info")
+        st.sidebar.code(f"API URL: {API_BASE_URL}/vehicles/stats")
+        st.sidebar.code(f"Status Code: {response.status_code}")
+        st.sidebar.code(f"Response: {response.text[:100]}...")
+        
+    except Exception as e:
         api_status = "🔴 Disconnected"
+        
+        # Debug information for connection errors
+        st.sidebar.markdown("### 🔍 Debug Info")
+        st.sidebar.code(f"API URL: {API_BASE_URL}/vehicles/stats")
+        st.sidebar.code(f"Error: {str(e)}")
+        st.sidebar.code(f"Error Type: {type(e).__name__}")
     
     st.sidebar.markdown(f"**API Status:** {api_status}")
     
@@ -69,9 +87,28 @@ def show_dashboard():
     """Show main dashboard with statistics"""
     st.title("🏠 Vehicle Tracking Dashboard")
     
+    # Debug section
+    st.subheader("🔍 Debug Information")
+    debug_col1, debug_col2 = st.columns(2)
+    
+    with debug_col1:
+        st.markdown("**API Request Details:**")
+        st.code(f"URL: {API_BASE_URL}/vehicles/stats")
+        st.code(f"Method: GET")
+        st.code(f"Timeout: 5 seconds")
+    
     try:
         # Get vehicle statistics
-        response = requests.get(f"{API_BASE_URL}/vehicles/stats")
+        st.markdown("**Making API Request...**")
+        response = requests.get(f"{API_BASE_URL}/vehicles/stats", timeout=5)
+        
+        with debug_col2:
+            st.markdown("**API Response Details:**")
+            st.code(f"Status Code: {response.status_code}")
+            st.code(f"Headers: {dict(response.headers)}")
+            st.code(f"Response Text: {response.text}")
+            st.code(f"Response Length: {len(response.text)} chars")
+        
         if response.status_code == 200:
             stats = response.json()
             
@@ -134,9 +171,25 @@ def show_dashboard():
         
         else:
             st.error("Failed to load vehicle statistics")
+            st.markdown("**Error Details:**")
+            st.code(f"Status Code: {response.status_code}")
+            st.code(f"Response: {response.text}")
+            st.code(f"URL: {response.url}")
     
     except Exception as e:
         st.error(f"Error connecting to API: {e}")
+        st.markdown("**Exception Details:**")
+        st.code(f"Exception Type: {type(e).__name__}")
+        st.code(f"Exception Message: {str(e)}")
+        st.code(f"Request URL: {API_BASE_URL}/vehicles/stats")
+        
+        # Additional debugging for common issues
+        if "ConnectionError" in str(type(e)):
+            st.warning("🔗 **Connection Error**: The API server might be down or unreachable")
+        elif "Timeout" in str(type(e)):
+            st.warning("⏱️ **Timeout Error**: The API server is taking too long to respond")
+        elif "HTTPError" in str(type(e)):
+            st.warning("🌐 **HTTP Error**: The API server returned an error status")
 
 
 def show_gallery():
@@ -483,8 +536,15 @@ def show_settings():
             # Storage management
             st.subheader("💾 Storage Management")
             
+            # Debug storage stats request
+            st.markdown("**Storage Stats Debug:**")
+            st.code(f"URL: {API_BASE_URL}/vehicles/storage/stats")
+            
             try:
                 storage_response = requests.get(f"{API_BASE_URL}/vehicles/storage/stats")
+                st.code(f"Status Code: {storage_response.status_code}")
+                st.code(f"Response: {storage_response.text}")
+                
                 if storage_response.status_code == 200:
                     storage_stats = storage_response.json()
                     
@@ -564,7 +624,7 @@ def show_live_view():
     with col1:
         # Try to fetch frame
         try:
-            response = requests.get(f"{API_BASE_URL}/api/v1/camera/raw", timeout=2)
+            response = requests.get(f"{API_BASE_URL}/camera/raw", timeout=2)
             if response.status_code == 200:
                 st.success("🟢 Camera Connected")
                 camera_connected = True
@@ -585,7 +645,7 @@ def show_live_view():
     if camera_connected:
         try:
             # Fetch frame
-            response = requests.get(f"{API_BASE_URL}/api/v1/camera/raw", timeout=2)
+            response = requests.get(f"{API_BASE_URL}/camera/raw", timeout=2)
             
             if response.status_code == 200:
                 # Display frame

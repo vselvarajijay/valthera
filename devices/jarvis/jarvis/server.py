@@ -80,6 +80,7 @@ async def _initialize_pipeline():
     """Initialize pipeline components."""
     try:
         from jarvis.infrastructure.container import get_camera_service, get_detection_service
+        from jarvis.tracking.vehicle_tracker import get_tracker
         
         # Initialize camera service
         camera_service = await get_camera_service()
@@ -90,6 +91,11 @@ async def _initialize_pipeline():
         detection_service = get_detection_service()
         if not await detection_service.is_initialized():
             logger.warning("[SERVER] Detection service not initialized")
+        
+        # Initialize vehicle tracker
+        tracker = get_tracker()
+        if not tracker.initialize():
+            logger.warning("[SERVER] Vehicle tracker not initialized")
         
         logger.info("[SERVER] Pipeline components initialized")
             

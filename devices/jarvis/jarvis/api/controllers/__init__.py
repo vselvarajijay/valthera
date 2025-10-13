@@ -32,6 +32,7 @@ from jarvis.api.controllers.detection_controller import DetectionController
 from jarvis.api.controllers.pipeline_controller import PipelineController
 from jarvis.api.controllers.camera_controller import CameraController
 from jarvis.api.controllers.health_controller import HealthController
+from jarvis.api.controllers.vehicle_controller import VehicleController
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ def create_api_router() -> APIRouter:
     pipeline_controller = PipelineController()
     camera_controller = CameraController()
     health_controller = HealthController()
+    vehicle_controller = VehicleController()
     
     # Register routes
     router.include_router(frame_controller.router, prefix="/frames", tags=["frames"])
@@ -53,5 +55,6 @@ def create_api_router() -> APIRouter:
     router.include_router(pipeline_controller.router, prefix="/pipeline", tags=["pipeline"])
     router.include_router(camera_controller.router, prefix="/camera", tags=["camera"])
     router.include_router(health_controller.router, prefix="/health", tags=["health"])
+    router.include_router(vehicle_controller.router, prefix="/vehicles", tags=["vehicles"])
     
     return router
