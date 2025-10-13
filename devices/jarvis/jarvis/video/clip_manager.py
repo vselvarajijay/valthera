@@ -9,7 +9,7 @@ merging multiple clips, and managing storage.
 
 import logging
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 
 try:

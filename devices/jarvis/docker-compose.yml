@@ -19,6 +19,13 @@ services:
       - "8001:8001"
     volumes:
       - vehicle_tracker_data:/data/vehicle_tracker
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+      - /dev/video3:/dev/video3
+      - /dev/video5:/dev/video5
+      - /dev/video6:/dev/video6
+      - /dev/video7:/dev/video7
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
       interval: 20s

@@ -14,7 +14,6 @@ from typing import Optional
 
 from .center_depth_processor import CenterDepthProcessor
 from .core.smart_pipeline import SmartCVPipeline
-from .api.v1.stream import broadcast_analysis_result
 
 logger = logging.getLogger(__name__)
 
@@ -43,37 +42,7 @@ def ensure_processors_initialized():
             smart_pipeline.start()
             logger.info("Smart CV pipeline started")
             
-            # Set up detection callback for WebSocket broadcasting
-            def on_detection(result):
-                try:
-                    # Try to get the current event loop
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # Schedule the coroutine to run
-                        asyncio.run_coroutine_threadsafe(broadcast_analysis_result(result), loop)
-                    else:
-                        # If no running loop, just log the result
-                        logger.info(f"[CALLBACK] Detection result: {result.get_total_detections()} objects")
-                except RuntimeError:
-                    # No event loop available, just log
-                    logger.info(f"[CALLBACK] Detection result: {result.get_total_detections()} objects")
-            
-            smart_pipeline.set_detection_callback(on_detection)
-            logger.info("Detection callback configured")
-            
-            # Set pipeline in API modules
-            from .api.v1.analyze import set_pipeline as set_analyze_pipeline
-            from .api.v1.stream import set_pipeline as set_stream_pipeline
-            from .api.v1.pipeline import set_pipeline as set_pipeline_pipeline
-            from .api.v1.classifiers import set_pipeline as set_classifiers_pipeline
-            from .api.v1.frames import set_pipeline as set_frames_pipeline
-            
-            set_analyze_pipeline(smart_pipeline)
-            set_stream_pipeline(smart_pipeline)
-            set_pipeline_pipeline(smart_pipeline)
-            set_classifiers_pipeline(smart_pipeline)
-            set_frames_pipeline(smart_pipeline)
-            logger.info("API modules configured with pipeline")
+            logger.info("Camera processors initialized successfully")
             
         except Exception as e:
             logger.error(f"Failed to initialize processors: {e}")
@@ -102,5 +71,7 @@ def cleanup_processors():
         
     except Exception as e:
         logger.error(f"Error during processor cleanup: {e}")
+
+
 
 

@@ -12,6 +12,12 @@ import requests
 import json
 from datetime import datetime, timedelta
 import os
+import base64
+import io
+from PIL import Image
+import time
+import websocket
+import threading
 
 # Configure page
 st.set_page_config(
@@ -22,7 +28,7 @@ st.set_page_config(
 )
 
 # API configuration
-API_BASE_URL = "http://jarvis-api:8001/api/v1"
+API_BASE_URL = "http://jarvis-api:8001"
 
 def main():
     """Main Streamlit application"""
@@ -32,7 +38,7 @@ def main():
     
     page = st.sidebar.selectbox(
         "Navigate",
-        ["🏠 Dashboard", "🚗 Vehicle Gallery", "📊 Timeline", "🎥 Playback", "⚙️ Settings"]
+        ["🏠 Dashboard", "🚗 Vehicle Gallery", "📊 Timeline", "🎥 Playback", "📹 Live View", "⚙️ Settings"]
     )
     
     # API status check
@@ -53,6 +59,8 @@ def main():
         show_timeline()
     elif page == "🎥 Playback":
         show_playback()
+    elif page == "📹 Live View":
+        show_live_view()
     elif page == "⚙️ Settings":
         show_settings()
 
@@ -538,6 +546,89 @@ def show_settings():
     
     except Exception as e:
         st.error(f"Error loading settings: {e}")
+
+
+def show_live_view():
+    """Show live camera feed using HTTP polling"""
+    st.title("📹 Live Camera View")
+    
+    # Initialize session state
+    if 'frame_count' not in st.session_state:
+        st.session_state.frame_count = 0
+    if 'last_frame_time' not in st.session_state:
+        st.session_state.last_frame_time = 0
+    
+    # Connection status
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Try to fetch frame
+        try:
+            response = requests.get(f"{API_BASE_URL}/api/v1/camera/raw", timeout=2)
+            if response.status_code == 200:
+                st.success("🟢 Camera Connected")
+                camera_connected = True
+            else:
+                st.error("🔴 Camera Disconnected")
+                camera_connected = False
+        except:
+            st.error("🔴 Camera Disconnected")
+            camera_connected = False
+    
+    with col2:
+        if st.button("🔄 Refresh"):
+            st.rerun()
+    
+    # Display live feed
+    st.subheader("📷 Live Camera Feed")
+    
+    if camera_connected:
+        try:
+            # Fetch frame
+            response = requests.get(f"{API_BASE_URL}/api/v1/camera/raw", timeout=2)
+            
+            if response.status_code == 200:
+                # Display frame
+                image = Image.open(io.BytesIO(response.content))
+                st.image(image, width='stretch')
+                
+                # Update metrics
+                st.session_state.frame_count += 1
+                current_time = time.time()
+                
+                # Frame information
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Frame Count", st.session_state.frame_count)
+                
+                with col2:
+                    if st.session_state.last_frame_time > 0:
+                        fps = 1.0 / max(0.01, current_time - st.session_state.last_frame_time)
+                        st.metric("FPS", f"{fps:.1f}")
+                    else:
+                        st.metric("FPS", "0.0")
+                
+                with col3:
+                    st.metric("Status", "🟢 Live")
+                
+                st.session_state.last_frame_time = current_time
+                
+                # Auto-refresh for smooth video
+                time.sleep(0.1)
+                st.rerun()
+            else:
+                st.error("Failed to fetch camera frame")
+        except Exception as e:
+            st.error(f"Error fetching camera feed: {e}")
+    else:
+        st.info("Waiting for camera feed...")
+        placeholder_image = Image.new('RGB', (640, 480), color='lightgray')
+        st.image(placeholder_image, width='stretch')
+        
+        # Auto-refresh to check for connection
+        time.sleep(1.0)
+        st.rerun()
 
 
 if __name__ == "__main__":

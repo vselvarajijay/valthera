@@ -33,7 +33,91 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Jarvis Smart CV Pipeline", version="2.0.0")
+app = FastAPI(
+    title="Jarvis Smart CV Pipeline API",
+    description="""
+    ## Intelligent Computer Vision Pipeline API
+    
+    The Jarvis Smart CV Pipeline provides a comprehensive API for intelligent computer vision processing with multi-classifier support, real-time streaming, and comprehensive system control.
+    
+    ### Key Features:
+    - **Multi-Classifier Support**: Person detection, object classification, face recognition, and vehicle detection
+    - **Real-time Streaming**: WebSocket-based live camera feeds with depth data
+    - **Intel RealSense Integration**: RGB and depth camera support
+    - **Vehicle Tracking**: Advanced vehicle detection and tracking capabilities
+    - **Pipeline Management**: Dynamic pipeline control and configuration
+    - **Health Monitoring**: Comprehensive system status and diagnostics
+    
+    ### Camera Capabilities:
+    - Raw RGB camera feeds
+    - Depth map visualization
+    - Real-time object detection
+    - Vehicle counting and tracking
+    - Mock camera support for testing
+    
+    ### API Endpoints:
+    - **Analysis**: Unified analysis with multiple classifiers
+    - **Streaming**: Real-time WebSocket data streams
+    - **Pipeline**: System control and configuration
+    - **Classifiers**: Individual classifier management
+    - **Frames**: Frame access and processing
+    - **Camera**: Direct camera control and feeds
+    - **Vehicles**: Vehicle-specific operations
+    
+    ### Authentication:
+    No authentication required for local network access.
+    
+    ### Base URLs:
+    - Development: `http://localhost:8001`
+    - Production: `http://jarvis.local:8001`
+    """,
+    version="2.0.0",
+    contact={
+        "name": "Valthera Development Team",
+        "email": "dev@valthera.com",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    openapi_tags=[
+        {
+            "name": "analysis",
+            "description": "Unified analysis operations with multiple classifiers",
+        },
+        {
+            "name": "streaming", 
+            "description": "Real-time WebSocket streaming endpoints",
+        },
+        {
+            "name": "pipeline",
+            "description": "Pipeline control and configuration management",
+        },
+        {
+            "name": "classifiers",
+            "description": "Individual classifier management and configuration",
+        },
+        {
+            "name": "frames",
+            "description": "Frame access, processing, and retrieval",
+        },
+        {
+            "name": "camera",
+            "description": "Direct camera control, feeds, and status",
+        },
+        {
+            "name": "vehicles",
+            "description": "Vehicle detection, tracking, and statistics",
+        },
+        {
+            "name": "health",
+            "description": "System health monitoring and diagnostics",
+        },
+    ],
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
 
 # CORS for easy local testing
 app.add_middleware(
@@ -118,9 +202,19 @@ async def shutdown_event():
 app.include_router(api_v1_router)
 
 
-@app.get("/health")
+@app.get("/health", tags=["health"], summary="System Health Check", description="Get comprehensive system health status including processor states and availability")
 async def health():
-    """Health check endpoint"""
+    """
+    Get comprehensive system health status.
+    
+    Returns detailed information about:
+    - Overall system status
+    - Center depth processor state
+    - Smart CV pipeline state
+    - Timestamp and version information
+    
+    This endpoint is useful for monitoring system health and debugging issues.
+    """
     # Get current processor status from processor manager
     center_depth_processor, smart_pipeline = get_processors()
     
@@ -142,9 +236,19 @@ async def health():
     return JSONResponse(status)
 
 
-@app.post("/api/v1/pipeline/initialize")
+@app.post("/api/v1/pipeline/initialize", tags=["pipeline"], summary="Initialize Pipeline", description="Manually initialize camera processors and pipeline components")
 async def initialize_pipeline():
-    """Manually initialize camera processors"""
+    """
+    Manually initialize camera processors and pipeline components.
+    
+    This endpoint forces initialization of:
+    - Center depth processor
+    - Smart CV pipeline
+    - Vehicle tracker
+    
+    Useful for debugging or when automatic initialization fails.
+    Returns the initialization status of each component.
+    """
     try:
         ensure_processors_initialized()
         return {
@@ -177,9 +281,21 @@ async def get_logs():
         return JSONResponse({"error": str(e), "log_entries": []})
 
 
-@app.get("/debug", response_class=HTMLResponse)
+@app.get("/debug", response_class=HTMLResponse, tags=["health"], summary="Debug View", description="Interactive debug page showing camera feeds, depth maps, and vehicle tracking")
 async def debug_view():
-    """Debug HTML page showing camera and depth views"""
+    """
+    Interactive debug page for camera and depth visualization.
+    
+    This endpoint returns an HTML page that provides:
+    - Real-time camera feed display
+    - Depth map visualization with color mapping
+    - Vehicle detection and counting
+    - WebSocket connection status
+    - Interactive controls for testing
+    
+    The page automatically connects to WebSocket streams and displays
+    live data from the camera system.
+    """
     html_content = """
     <!DOCTYPE html>
     <html>
@@ -308,8 +424,8 @@ async def debug_view():
                 </div>
                 <div class="feed">
                     <h2>Depth Map</h2>
-                    <img id="depth-feed" src="/api/v1/camera/depth" alt="Depth map" onerror="handleImageError('depth')">
-                    <div class="info">WebSocket streaming (~10 FPS)</div>
+                    <canvas id="depth-canvas" width="640" height="480" style="width: 100%; height: auto; border-radius: 4px; background: #000;"></canvas>
+                    <div class="info">WebSocket streaming (~10 FPS) - Raw depth data</div>
                 </div>
                 <div class="feed">
                     <h2>Car Tracking</h2>
@@ -345,6 +461,112 @@ async def debug_view():
                 updateStatus('Camera feed not available - camera may be initializing', true);
             }
             
+            function renderDepthData(depthData, metadata) {
+                console.log('renderDepthData called with:', metadata);
+                console.log('Depth data length:', depthData ? depthData.length : 'null');
+                const canvas = document.getElementById('depth-canvas');
+                const ctx = canvas.getContext('2d');
+                
+                if (!depthData || !metadata) {
+                    console.log('Missing depth data or metadata');
+                    return;
+                }
+                
+                console.log('Starting depth rendering...');
+                
+                const width = metadata.width;
+                const height = metadata.height;
+                console.log('Rendering depth data:', width, 'x', height);
+                
+                // Resize canvas if needed
+                canvas.width = width;
+                canvas.height = height;
+                
+                // Decode base64 depth data to Uint16Array
+                const binaryString = atob(depthData);
+                const depth = new Uint16Array(binaryString.length / 2);
+                for (let i = 0; i < binaryString.length; i += 2) {
+                    depth[i / 2] = binaryString.charCodeAt(i) | (binaryString.charCodeAt(i + 1) << 8);
+                }
+                
+                // Create image data for canvas
+                const img = ctx.createImageData(width, height);
+                
+                // Full depth image with RED=close, GREEN=far color mapping
+                const maxDepth = 5000; // 5 meters in mm
+                const minDepth = 100;   // 10cm minimum depth
+                
+                let minVal = 65535;
+                let maxVal = 0;
+                
+                // Find actual min/max values for better contrast
+                for (let i = 0; i < depth.length; i++) {
+                    if (depth[i] > 0 && depth[i] < 65535) {
+                        minVal = Math.min(minVal, depth[i]);
+                        maxVal = Math.max(maxVal, depth[i]);
+                    }
+                }
+                
+                // Use actual range with reasonable bounds
+                let actualMin = Math.max(minDepth, minVal);
+                let actualMax = Math.min(maxDepth, maxVal);
+                
+                // Ensure we have a reasonable range
+                let range = actualMax - actualMin;
+                if (range < 500) {
+                    const center = (actualMin + actualMax) / 2;
+                    actualMin = Math.max(minDepth, center - 1000);
+                    actualMax = Math.min(maxDepth, center + 1000);
+                    range = actualMax - actualMin;
+                }
+                
+                console.log('Depth range:', actualMin, 'to', actualMax, 'mm (range:', range, 'mm)');
+                
+                for (let i = 0, j = 0; i < depth.length; i++, j += 4) {
+                    const v16 = depth[i];
+                    
+                    if (v16 === 0 || v16 >= 65535) {
+                        // Invalid depth - show as black
+                        img.data[j] = 0;     // R
+                        img.data[j+1] = 0;   // G
+                        img.data[j+2] = 0;   // B
+                        img.data[j+3] = 255; // A
+                    } else {
+                        // Map depth to color: RED=close, GREEN=far
+                        const normalized = Math.max(0, Math.min(1, (v16 - actualMin) / range));
+                        
+                        // Apply gamma correction for better visibility
+                        const gamma = 0.6;
+                        const contrastNormalized = Math.pow(normalized, gamma);
+                        
+                        // Color mapping: RED (close) -> YELLOW (mid) -> GREEN (far)
+                        let r, g, b;
+                        
+                        if (contrastNormalized < 0.5) {
+                            // Close to mid: RED to YELLOW
+                            const t = contrastNormalized * 2;
+                            r = 255;
+                            g = Math.floor(t * 255);
+                            b = 0;
+                        } else {
+                            // Mid to far: YELLOW to GREEN
+                            const t = (contrastNormalized - 0.5) * 2;
+                            r = Math.floor((1 - t) * 255);
+                            g = 255;
+                            b = 0;
+                        }
+                        
+                        img.data[j] = r;     // R
+                        img.data[j+1] = g;   // G
+                        img.data[j+2] = b;   // B
+                        img.data[j+3] = 255; // A
+                    }
+                }
+                
+                // Draw the depth image to canvas
+                ctx.putImageData(img, 0, 0);
+            }
+            
             function connectWebSocket() {
                 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 const wsUrl = `${protocol}//${window.location.host}/api/v1/camera/stream`;
@@ -359,19 +581,24 @@ async def debug_view():
                 wsConnection.onmessage = function(event) {
                     try {
                         const data = JSON.parse(event.data);
+                        console.log('Received WebSocket message:', data.type, 'Frame:', data.frame_count);
                         
                         if (data.type === 'camera_frame') {
                             // Update raw camera feed
                             if (data.raw_frame) {
                                 const rawImg = document.getElementById('raw-feed');
                                 rawImg.src = 'data:image/jpeg;base64,' + data.raw_frame;
+                                console.log('Updated raw camera feed');
                             }
                             
-                            // Update depth map
-                            if (data.depth_frame) {
-                                const depthImg = document.getElementById('depth-feed');
-                                depthImg.src = 'data:image/jpeg;base64,' + data.depth_frame;
-                            }
+                            // Update depth map with raw depth data
+                    if (data.depth_data && data.depth_data.data && data.depth_data.metadata) {
+                        console.log('✅ DEPTH DATA FOUND - Rendering depth data:', data.depth_data.metadata);
+                        console.log('Depth data size:', data.depth_data.data.length, 'bytes');
+                        renderDepthData(data.depth_data.data, data.depth_data.metadata);
+                    } else {
+                        console.log('❌ NO DEPTH DATA - Available data:', data.depth_data);
+                    }
                             
                             // Update car tracking view
                             if (data.tracking_frame) {
@@ -470,7 +697,18 @@ async def debug_view():
     return HTMLResponse(content=html_content)
 
 
-    """Root endpoint with basic info"""
+@app.get("/", tags=["health"], summary="API Information", description="Get basic API information and available endpoints")
+async def root():
+    """
+    Get basic API information and available endpoints.
+    
+    Returns:
+    - API name and version
+    - Description of capabilities
+    - Available endpoint categories
+    
+    This is the root endpoint for discovering API capabilities.
+    """
     return {
         "name": "Jarvis Smart CV Pipeline",
         "version": "2.0.0",

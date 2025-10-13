@@ -50,11 +50,17 @@ class CenterDepthProcessor:
         """Initialize depth camera"""
         try:
             self.depth_camera = DepthCamera(width=640, height=480, fps=30)
-            # Set the callback to process new frames
-            self.depth_camera.set_frame_callback(self._on_new_frame)
-            logger.info("[CENTER_DEPTH] Depth camera initialized with callback")
+            if self.depth_camera.is_initialized():
+                # Set the callback to process new frames
+                self.depth_camera.set_frame_callback(self._on_new_frame)
+                logger.info("[CENTER_DEPTH] Depth camera initialized with callback")
+            else:
+                logger.error("[CENTER_DEPTH] Depth camera failed to initialize properly")
+                self.depth_camera = None
         except Exception as e:
             logger.error(f"[CENTER_DEPTH] Error initializing depth camera: {e}")
+            import traceback
+            logger.error(f"[CENTER_DEPTH] Traceback: {traceback.format_exc()}")
             self.depth_camera = None
     
     def _calculate_center_depth(self, depth_frame: np.ndarray) -> Optional[CenterDepthData]:

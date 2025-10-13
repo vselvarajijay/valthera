@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-RUN pip install streamlit plotly requests pillow
+RUN pip install streamlit plotly requests pillow websocket-client
 
 # Set working directory
 WORKDIR /app

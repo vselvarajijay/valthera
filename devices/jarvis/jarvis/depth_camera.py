@@ -54,7 +54,12 @@ class DepthCamera:
         # Callbacks
         self.on_new_frame = None
         
-        self._initialize_realsense()
+        # Initialize RealSense pipeline
+        if not self._initialize_realsense():
+            logger.error("[DEPTH] Failed to initialize RealSense pipeline")
+            self.pipeline = None
+            self.config = None
+            self.align = None
     
     def _initialize_realsense(self):
         """Initialize RealSense pipeline"""
@@ -74,9 +79,8 @@ class DepthCamera:
             # Create align object
             self.align = rs.align(rs.stream.color)
             
-            # Start pipeline
-            profile = self.pipeline.start(self.config)
-            logger.info(f"[DEPTH] RealSense pipeline started: {self.width}x{self.height} @ {self.fps}fps")
+            # Don't start pipeline yet - will be started in start() method
+            logger.info(f"[DEPTH] RealSense pipeline configured: {self.width}x{self.height} @ {self.fps}fps")
             
             return True
             
@@ -176,14 +180,23 @@ class DepthCamera:
             logger.warning("[DEPTH] Depth camera already running")
             return
         
-        if not self.pipeline:
+        if not self.pipeline or not self.config:
             logger.error("[DEPTH] Cannot start - RealSense pipeline not initialized")
             return
         
-        self.is_running = True
-        self.thread = threading.Thread(target=self._capture_loop, daemon=True)
-        self.thread.start()
-        logger.info("[DEPTH] Depth camera started")
+        try:
+            # Start the pipeline
+            profile = self.pipeline.start(self.config)
+            logger.info(f"[DEPTH] RealSense pipeline started: {self.width}x{self.height} @ {self.fps}fps")
+            
+            self.is_running = True
+            self.thread = threading.Thread(target=self._capture_loop, daemon=True)
+            self.thread.start()
+            logger.info("[DEPTH] Depth camera started")
+            
+        except Exception as e:
+            logger.error(f"[DEPTH] Error starting pipeline: {e}")
+            raise
     
     def stop(self):
         """Stop frame capture"""
@@ -228,6 +241,10 @@ class DepthCamera:
         """Cleanup resources"""
         self.stop()
         logger.info("[DEPTH] Depth camera cleaned up")
+    
+    def is_initialized(self) -> bool:
+        """Check if the depth camera is properly initialized"""
+        return self.pipeline is not None and self.config is not None and self.align is not None
 
 
 def main():
